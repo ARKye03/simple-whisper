@@ -1,12 +1,44 @@
 use std::path::PathBuf;
 
 use docx_rs::{Docx, Paragraph, Run};
+use keyring::Entry;
+use printpdf::{BuiltinFont, Mm, PdfDocument};
 use reqwest::multipart;
 use tauri::AppHandle;
 use tauri_plugin_shell::ShellExt;
 
 const MAX_CHUNK_BYTES: u64 = 24 * 1024 * 1024;
 const SEGMENT_SECONDS: &str = "5400";
+const KEYCHAIN_SERVICE: &str = "com.arkye03.simple-whisper";
+const KEYCHAIN_ACCOUNT: &str = "groq_api_key";
+
+fn api_key_entry() -> Result<Entry, String> {
+    Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn keychain_get_api_key() -> Result<String, String> {
+    let entry = api_key_entry()?;
+    match entry.get_password() {
+        Ok(s) => Ok(s),
+        Err(keyring::Error::NoEntry) => Ok(String::new()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+fn keychain_set_api_key(key: String) -> Result<(), String> {
+    let trimmed = key.trim();
+    let entry = api_key_entry()?;
+    if trimmed.is_empty() {
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
+    } else {
+        entry.set_password(trimmed).map_err(|e| e.to_string())
+    }
+}
 
 fn temp_dir() -> PathBuf {
     std::env::temp_dir().join("simple-whisper")
@@ -128,22 +160,26 @@ async fn chunk_audio(app: AppHandle, audio_path: String) -> Result<Vec<String>, 
     Ok(chunks)
 }
 
-#[tauri::command]
-async fn transcribe_audio(audio_path: String, api_key: String) -> Result<String, String> {
-    if api_key.trim().is_empty() {
-        return Err("Falta clave API de Groq".into());
-    }
-
-    let bytes = std::fs::read(&audio_path).map_err(|e| e.to_string())?;
+async fn transcribe_one(
+    audio_path: &str,
+    api_key: &str,
+    model: &str,
+    language: &str,
+) -> Result<String, String> {
+    let bytes = std::fs::read(audio_path).map_err(|e| e.to_string())?;
     let part = multipart::Part::bytes(bytes)
         .file_name("audio.mp3")
         .mime_str("audio/mpeg")
         .map_err(|e| e.to_string())?;
 
-    let form = multipart::Form::new()
+    let mut form = multipart::Form::new()
         .part("file", part)
-        .text("model", "whisper-large-v3-turbo")
+        .text("model", model.to_string())
         .text("response_format", "text");
+
+    if !language.is_empty() && language != "auto" {
+        form = form.text("language", language.to_string());
+    }
 
     let client = reqwest::Client::new();
     let res = client
@@ -164,17 +200,44 @@ async fn transcribe_audio(audio_path: String, api_key: String) -> Result<String,
 }
 
 #[tauri::command]
+async fn transcribe_audio(
+    audio_path: String,
+    api_key: String,
+    model: Option<String>,
+    language: Option<String>,
+) -> Result<String, String> {
+    if api_key.trim().is_empty() {
+        return Err("Falta clave API de Groq".into());
+    }
+    let model = model
+        .filter(|m| !m.is_empty())
+        .unwrap_or_else(|| "whisper-large-v3-turbo".to_string());
+    let language = language.unwrap_or_else(|| "auto".to_string());
+    transcribe_one(&audio_path, &api_key, &model, &language).await
+}
+
+#[tauri::command]
 async fn transcribe_video(
     app: AppHandle,
     video_path: String,
     api_key: String,
+    model: Option<String>,
+    language: Option<String>,
 ) -> Result<String, String> {
+    if api_key.trim().is_empty() {
+        return Err("Falta clave API de Groq".into());
+    }
+    let model = model
+        .filter(|m| !m.is_empty())
+        .unwrap_or_else(|| "whisper-large-v3-turbo".to_string());
+    let language = language.unwrap_or_else(|| "auto".to_string());
+
     let audio = extract_audio(app.clone(), video_path).await?;
     let chunks = chunk_audio(app, audio).await?;
 
     let mut out = String::new();
     for chunk in chunks {
-        let text = transcribe_audio(chunk, api_key.clone()).await?;
+        let text = transcribe_one(&chunk, &api_key, &model, &language).await?;
         if !out.is_empty() {
             out.push_str("\n\n");
         }
@@ -183,15 +246,103 @@ async fn transcribe_video(
     Ok(out)
 }
 
-#[tauri::command]
-fn save_to_docx(text: String, path: String) -> Result<(), String> {
-    let file = std::fs::File::create(&path).map_err(|e| e.to_string())?;
+fn save_docx(text: &str, path: &str) -> Result<(), String> {
+    let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
     let mut doc = Docx::new();
     for paragraph in text.split("\n\n") {
         doc = doc.add_paragraph(Paragraph::new().add_run(Run::new().add_text(paragraph)));
     }
     doc.build().pack(file).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+fn save_txt(text: &str, path: &str) -> Result<(), String> {
+    std::fs::write(path, text).map_err(|e| e.to_string())
+}
+
+fn save_md(text: &str, path: &str) -> Result<(), String> {
+    let body = format!("# Transcripción\n\n{}\n", text.trim_end());
+    std::fs::write(path, body).map_err(|e| e.to_string())
+}
+
+fn wrap_line(line: &str, max_chars: usize) -> Vec<String> {
+    if line.is_empty() {
+        return vec![String::new()];
+    }
+    let mut out = Vec::new();
+    let mut current = String::new();
+    for word in line.split_whitespace() {
+        if current.is_empty() {
+            current.push_str(word);
+        } else if current.len() + 1 + word.len() <= max_chars {
+            current.push(' ');
+            current.push_str(word);
+        } else {
+            out.push(std::mem::take(&mut current));
+            current.push_str(word);
+        }
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    if out.is_empty() {
+        out.push(String::new());
+    }
+    out
+}
+
+fn save_pdf(text: &str, path: &str) -> Result<(), String> {
+    if text.chars().any(|c| c as u32 > 0xFF) {
+        return Err(
+            "El formato PDF solo soporta caracteres Latin-1. Usa DOCX, MD o TXT para este texto."
+                .to_string(),
+        );
+    }
+    let (doc, page1, layer1) =
+        PdfDocument::new("Transcripción", Mm(210.0), Mm(297.0), "Layer 1");
+    let font = doc
+        .add_builtin_font(BuiltinFont::Helvetica)
+        .map_err(|e| e.to_string())?;
+
+    let font_size: f32 = 11.0;
+    let line_height: f32 = 5.2;
+    let top_margin: f32 = 280.0;
+    let bottom_margin: f32 = 18.0;
+    let left_margin: f32 = 20.0;
+    let max_chars: usize = 92;
+
+    let mut current_layer = doc.get_page(page1).get_layer(layer1);
+    let mut y: f32 = top_margin;
+
+    for paragraph in text.split('\n') {
+        let lines = wrap_line(paragraph, max_chars);
+        for line in lines {
+            if y < bottom_margin {
+                let (new_page, new_layer) =
+                    doc.add_page(Mm(210.0), Mm(297.0), "Layer 1");
+                current_layer = doc.get_page(new_page).get_layer(new_layer);
+                y = top_margin;
+            }
+            current_layer.use_text(&line, font_size, Mm(left_margin), Mm(y), &font);
+            y -= line_height;
+        }
+    }
+
+    let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+    let mut buf = std::io::BufWriter::new(file);
+    doc.save(&mut buf).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn save_transcript(text: String, path: String, format: String) -> Result<(), String> {
+    match format.as_str() {
+        "docx" => save_docx(&text, &path),
+        "txt" => save_txt(&text, &path),
+        "md" => save_md(&text, &path),
+        "pdf" => save_pdf(&text, &path),
+        other => Err(format!("Formato no soportado: {other}")),
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -207,7 +358,9 @@ pub fn run() {
             chunk_audio,
             transcribe_audio,
             transcribe_video,
-            save_to_docx,
+            save_transcript,
+            keychain_get_api_key,
+            keychain_set_api_key,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

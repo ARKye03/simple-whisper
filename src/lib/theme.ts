@@ -17,12 +17,13 @@ async function getStore(): Promise<Store> {
   return cachedStore;
 }
 
-function applyClass(theme: Theme) {
+function applyAttr(theme: Theme) {
+  if (typeof document === "undefined") return;
   const prefersDark =
     typeof window !== "undefined" &&
     window.matchMedia("(prefers-color-scheme: dark)").matches;
   const isDark = theme === "dark" || (theme === "system" && prefersDark);
-  document.documentElement.classList.toggle("dark", isDark);
+  document.documentElement.setAttribute("data-theme", isDark ? "dark" : "light");
 }
 
 function subscribeSystem(theme: Theme) {
@@ -36,7 +37,7 @@ function subscribeSystem(theme: Theme) {
   if (theme !== "system") return;
 
   mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
-  mediaListener = () => applyClass("system");
+  mediaListener = () => applyAttr("system");
   mediaQuery.addEventListener("change", mediaListener);
 }
 
@@ -44,7 +45,7 @@ export async function loadTheme(): Promise<Theme> {
   const store = await getStore();
   const stored = (await store.get<Theme>(THEME_KEY)) ?? "system";
   currentTheme = stored;
-  applyClass(stored);
+  applyAttr(stored);
   subscribeSystem(stored);
   return stored;
 }
@@ -53,7 +54,7 @@ export async function setTheme(theme: Theme): Promise<void> {
   const store = await getStore();
   await store.set(THEME_KEY, theme);
   currentTheme = theme;
-  applyClass(theme);
+  applyAttr(theme);
   subscribeSystem(theme);
 }
 
