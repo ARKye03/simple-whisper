@@ -12,9 +12,12 @@
   "app": {
     "windows": [
       {
-        "title": "simple-whisper",
-        "width": 800,
-        "height": 600
+        "title": "Simple Whisper",
+        "width": 960,
+        "height": 720,
+        "minWidth": 560,
+        "minHeight": 520,
+        "resizable": true
       }
     ],
     "security": {
