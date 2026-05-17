@@ -61,8 +61,22 @@ Bundles land in `src-tauri/target/release/bundle/`:
 - `macos/simple-whisper.app`
 - `dmg/simple-whisper_<version>_<arch>.dmg`
 
-> [!TIP]
-> First launch from Finder? Right-click, then Open. Unsigned dev builds get Gatekeeper-blocked otherwise.
+## Install from a release
+
+Grab the latest DMG from [Releases](https://github.com/ARKye03/simple-whisper/releases):
+
+- `simple-whisper_<version>_aarch64.dmg` — Apple Silicon (M1/M2/M3/M4)
+- `simple-whisper_<version>_x64.dmg` — Intel Mac
+- `simple-whisper_<version>_x64-setup.exe` / `.msi` — Windows
+
+> [!WARNING]
+> macOS builds are unsigned. Gatekeeper marks the app as "damaged" on first launch. Strip the quarantine xattr after dragging the app to `/Applications`:
+>
+> ```sh
+> xattr -cr /Applications/simple-whisper.app
+> ```
+>
+> Then open normally. One-time fix per install.
 
 ## Configure
 
