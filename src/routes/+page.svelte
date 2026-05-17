@@ -1,214 +1,157 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
-  import { open, save } from "@tauri-apps/plugin-dialog";
+  import { onMount } from "svelte";
+  import { getSettings } from "$lib/settings";
   import { t } from "$lib/i18n/es";
-  import { getApiKey } from "$lib/settings";
+  import DropZone from "$lib/components/DropZone.svelte";
+  import FileCard from "$lib/components/FileCard.svelte";
+  import Icon from "$lib/components/Icons.svelte";
+  import { fileNameOf, type FileItem } from "$lib/types";
 
-  type Stage = "idle" | "extracting" | "chunking" | "uploading" | "ready" | "saved" | "error";
+  let files = $state<FileItem[]>([]);
+  let expandedId = $state<number | null>(null);
+  let isProcessing = $state(false);
+  let nextId = 0;
 
-  let videoPath = $state<string | null>(null);
-  let stage = $state<Stage>("idle");
-  let transcript = $state("");
-  let errorMsg = $state("");
+  const hasFiles = $derived(files.length > 0);
+  const queuedCount = $derived(files.filter((f) => f.status === "queued").length);
+  const allDone = $derived(hasFiles && files.every((f) => f.status === "completed"));
 
-  const stageLabel = $derived.by(() => {
-    switch (stage) {
-      case "extracting": return t.extractingAudio;
-      case "chunking": return t.chunking;
-      case "uploading": return t.uploadingToGroq;
-      case "ready": return t.ready;
-      case "saved": return t.saved;
-      case "error": return t.errorTitle;
-      default: return "";
-    }
-  });
-
-  const busy = $derived(
-    stage === "extracting" || stage === "chunking" || stage === "uploading"
-  );
-
-  async function pickVideo() {
-    const selected = await open({
-      multiple: false,
-      filters: [
-        {
-          name: t.videoFilters,
-          extensions: ["mp4", "mov", "mkv", "webm", "avi", "m4v", "wmv", "flv"],
-        },
-      ],
-    });
-    if (typeof selected === "string") {
-      videoPath = selected;
-      transcript = "";
-      stage = "idle";
-      errorMsg = "";
-    }
+  async function statSize(_path: string): Promise<number> {
+    return 0; // size unknown without fs read permission — leave blank ("—")
   }
 
-  async function runTranscribe() {
-    if (!videoPath) return;
-    const apiKey = await getApiKey();
-    if (!apiKey) {
-      errorMsg = t.apiKeyMissing;
-      stage = "error";
+  async function onFilesAdded(paths: string[]) {
+    const existing = new Set(files.map((f) => f.path));
+    const fresh = paths.filter((p) => !existing.has(p));
+    if (!fresh.length) return;
+
+    const additions: FileItem[] = [];
+    for (const p of fresh) {
+      additions.push({
+        id: ++nextId,
+        name: fileNameOf(p),
+        path: p,
+        size: await statSize(p),
+        status: "queued",
+        progress: 0,
+        transcript: null,
+        error: null,
+        index: files.length + additions.length,
+      });
+    }
+    files = [...files, ...additions];
+  }
+
+  function removeFile(id: number) {
+    files = files.filter((f) => f.id !== id);
+    if (expandedId === id) expandedId = null;
+  }
+
+  function toggleExpand(id: number) {
+    expandedId = expandedId === id ? null : id;
+  }
+
+  function clearAll() {
+    files = [];
+    expandedId = null;
+  }
+
+  async function startProcessing() {
+    if (isProcessing) return;
+    const s = await getSettings();
+    if (!s.apiKey) {
+      const queued = files.filter((f) => f.status === "queued");
+      files = files.map((f) =>
+        queued.find((q) => q.id === f.id)
+          ? { ...f, status: "error", error: t.apiKeyMissing }
+          : f,
+      );
       return;
     }
 
-    try {
-      transcript = "";
-      errorMsg = "";
-      stage = "extracting";
-      const text = await invoke<string>("transcribe_video", {
-        videoPath,
-        apiKey,
-      });
-      transcript = text;
-      stage = "ready";
-    } catch (e) {
-      errorMsg = String(e);
-      stage = "error";
+    isProcessing = true;
+    const queuedIds = files.filter((f) => f.status === "queued").map((f) => f.id);
+
+    for (const fid of queuedIds) {
+      files = files.map((f) =>
+        f.id === fid ? { ...f, status: "processing", progress: 5 } : f,
+      );
+
+      // Indeterminate-ish animation while invoke runs (real progress would need event plumbing).
+      let progress = 5;
+      const ticker = setInterval(() => {
+        progress = Math.min(92, progress + Math.random() * 6);
+        files = files.map((f) => (f.id === fid ? { ...f, progress } : f));
+      }, 250);
+
+      try {
+        const file = files.find((f) => f.id === fid)!;
+        const text = await invoke<string>("transcribe_video", {
+          videoPath: file.path,
+          apiKey: s.apiKey,
+          model: s.model,
+          language: s.language,
+        });
+        clearInterval(ticker);
+        files = files.map((f) =>
+          f.id === fid
+            ? { ...f, status: "completed", progress: 100, transcript: text }
+            : f,
+        );
+        expandedId = fid;
+      } catch (e) {
+        clearInterval(ticker);
+        files = files.map((f) =>
+          f.id === fid ? { ...f, status: "error", error: String(e) } : f,
+        );
+        expandedId = fid;
+      }
     }
-  }
 
-  async function saveDocx() {
-    if (!transcript) return;
-    const path = await save({
-      defaultPath: "transcripcion.docx",
-      filters: [{ name: t.docxFilters, extensions: ["docx"] }],
-    });
-    if (!path) return;
-    try {
-      await invoke("save_to_docx", { text: transcript, path });
-      stage = "saved";
-    } catch (e) {
-      errorMsg = String(e);
-      stage = "error";
-    }
+    isProcessing = false;
   }
-
-  function fileName(p: string): string {
-    const parts = p.split(/[\\/]/);
-    return parts[parts.length - 1] ?? p;
-  }
-
-  const wordCount = $derived(
-    transcript.trim() ? transcript.trim().split(/\s+/).length : 0
-  );
 </script>
 
-<main class="flex-1">
-  <div class="max-w-4xl mx-auto px-5 sm:px-8 pt-8 sm:pt-12 pb-12 sm:pb-16">
-
-    <header class="reveal reveal-1 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 sm:gap-8 mb-8 sm:mb-12">
-      <div class="flex-1">
-        <div class="eyebrow mb-3">Transcripción de video</div>
-        <h1 class="display text-[clamp(2.4rem,9vw,5.4rem)] font-light">
-          Simple<br/>
-          <em style:color="var(--color-accent)" style:font-style="italic" style:font-variation-settings="'opsz' 144, 'wght' 400, 'SOFT' 80">Whisper</em>
-        </h1>
+<main style="flex:1; overflow-y:auto; padding: 28px;">
+  <div style="max-width: 660px; margin: 0 auto;">
+    {#if !hasFiles}
+      <div style="padding-top: 48px; padding-bottom: 32px;">
+        <DropZone compact={false} busy={isProcessing} {onFilesAdded} />
       </div>
-      <a href="/settings" class="btn-ghost" style:white-space="nowrap">
-        {t.settings}
-      </a>
-    </header>
+    {:else}
+      <div style="display:flex; flex-direction:column; gap:14px;">
+        <DropZone compact={true} busy={isProcessing} {onFilesAdded} />
 
-    <div class="rule mb-12"></div>
-
-    <!-- 01 — Source -->
-    <section class="reveal reveal-2 grid grid-cols-1 sm:grid-cols-[4.5rem_1fr] gap-4 sm:gap-8 mb-10">
-      <div class="numeral">01</div>
-      <div class="flex flex-col gap-4">
-        <div class="eyebrow">Origen</div>
-        <div
-          class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 sm:gap-6 border-b pb-5"
-          style:border-color="var(--color-rule)"
-        >
-          <div class="min-w-0 flex-1">
-            <div
-              class="font-mono text-[0.95rem] truncate"
-              style:color={videoPath ? "var(--color-ink)" : "var(--color-ink-soft)"}
-            >
-              {videoPath ? fileName(videoPath) : t.noFileSelected}
-            </div>
-            {#if videoPath}
-              <div class="font-mono text-[0.7rem] truncate mt-1" style:color="var(--color-ink-soft)">
-                {videoPath}
-              </div>
-            {/if}
-          </div>
-          <button type="button" onclick={pickVideo} disabled={busy} class="btn-ghost shrink-0">
-            {t.selectVideo}
-          </button>
+        <div style="display:flex; flex-direction:column; gap:10px;">
+          {#each files as file (file.id)}
+            <FileCard
+              {file}
+              expanded={expandedId === file.id}
+              onRemove={removeFile}
+              onToggle={toggleExpand}
+            />
+          {/each}
         </div>
-      </div>
-    </section>
 
-    <!-- 02 — Transcribe -->
-    <section class="reveal reveal-3 grid grid-cols-1 sm:grid-cols-[4.5rem_1fr] gap-4 sm:gap-8 mb-10">
-      <div class="numeral">02</div>
-      <div class="flex flex-col gap-4">
-        <div class="eyebrow">Acción</div>
-        <div class="flex flex-wrap items-center gap-x-5 gap-y-3">
-          <button
-            type="button"
-            onclick={runTranscribe}
-            disabled={!videoPath || busy}
-            class="btn-primary"
-          >
-            {busy ? t.transcribing : t.transcribe}
-          </button>
-
-          {#if busy}
-            <div class="waveform" aria-hidden="true">
-              <span></span><span></span><span></span><span></span><span></span>
-            </div>
+        <div style="display:flex; align-items:center; justify-content:center; gap:12px; padding-top:8px;">
+          {#if queuedCount > 0 && !isProcessing}
+            <button class="btn-primary" onclick={startProcessing}>
+              {t.transcribeBtn}{queuedCount > 1 ? ` (${queuedCount})` : ""}
+            </button>
           {/if}
-
-          {#if stage !== "idle"}
-            <span class="eyebrow" style:color={stage === "error" ? "var(--color-accent)" : "var(--color-ink-soft)"}>
-              · {stageLabel}
+          {#if isProcessing}
+            <span style="font-size:12px; color: var(--text-3); display:flex; align-items:center; gap:8px;">
+              <Icon name="spinner" size={14} /> {t.processing}
             </span>
           {/if}
-        </div>
-
-        {#if stage === "error"}
-          <pre
-            class="font-mono text-[0.78rem] whitespace-pre-wrap border-l-2 pl-3 py-1 leading-relaxed"
-            style:color="var(--color-accent)"
-            style:border-color="var(--color-accent)"
-          >{errorMsg}</pre>
-        {/if}
-      </div>
-    </section>
-
-    <!-- 03 — Transcript -->
-    {#if transcript}
-      <section class="reveal reveal-4 grid grid-cols-1 sm:grid-cols-[4.5rem_1fr] gap-4 sm:gap-8">
-        <div class="numeral">03</div>
-        <div class="flex flex-col gap-4">
-          <div class="flex items-baseline justify-between">
-            <div class="eyebrow">Transcripción</div>
-            <div class="eyebrow">{wordCount} palabras</div>
-          </div>
-
-          <textarea
-            bind:value={transcript}
-            rows="18"
-            class="transcript-area"
-            spellcheck="false"
-          ></textarea>
-
-          <div class="flex items-center gap-4">
-            <button type="button" onclick={saveDocx} class="btn-primary">
-              {t.saveDocx}
+          {#if allDone && !isProcessing}
+            <button class="btn-ghost" onclick={clearAll} style="font-size:12px; padding:6px 14px;">
+              {t.clearAll}
             </button>
-            {#if stage === "saved"}
-              <span class="eyebrow" style:color="var(--color-accent)">✓ {t.saved}</span>
-            {/if}
-          </div>
+          {/if}
         </div>
-      </section>
+      </div>
     {/if}
-
   </div>
 </main>
