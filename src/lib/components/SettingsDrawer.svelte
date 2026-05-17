@@ -3,8 +3,8 @@
   import { settingsOpen } from "$lib/drawer";
   import { setTheme, loadTheme, type Theme } from "$lib/theme";
   import {
-    getSettings,
-    updateSettings,
+    settingsStore,
+    patchSettings,
     type AppSettings,
     type Model,
     type Language,
@@ -13,23 +13,28 @@
   import { t } from "$lib/i18n/es";
   import Icon from "./Icons.svelte";
 
-  let settings = $state<AppSettings>({
-    apiKey: "",
-    model: "whisper-large-v3-turbo",
-    language: "auto",
-    format: "docx",
-  });
   let theme = $state<Theme>("system");
   let showKey = $state(false);
 
   onMount(async () => {
-    settings = await getSettings();
     theme = await loadTheme();
   });
 
+  const pdfDisabled = $derived(
+    $settingsStore.language === "ja" || $settingsStore.language === "zh",
+  );
+
   async function patch(p: Partial<AppSettings>) {
-    settings = { ...settings, ...p };
-    await updateSettings(p);
+    // Auto-switch off pdf when language moves to a script Helvetica builtin can't encode.
+    if (
+      p.language &&
+      (p.language === "ja" || p.language === "zh") &&
+      $settingsStore.format === "pdf"
+    ) {
+      await patchSettings({ ...p, format: "docx" });
+      return;
+    }
+    await patchSettings(p);
   }
 
   async function chooseTheme(next: Theme) {
@@ -125,7 +130,7 @@
       <div>
         <div style="font-size:11px; font-weight:500; color:var(--text-3); text-transform:uppercase; letter-spacing:0.08em; margin-bottom:8px;">{t.model}</div>
         <select
-          value={settings.model}
+          value={$settingsStore.model}
           onchange={(e) => patch({ model: (e.currentTarget as HTMLSelectElement).value as Model })}
           style="width:100%; padding:9px 12px; border-radius:var(--r-md); background:var(--bg-3); border:1px solid var(--border-2); color:var(--text-1); font-family:var(--font); font-size:13px; outline:none;"
         >
@@ -137,7 +142,7 @@
       <div>
         <div style="font-size:11px; font-weight:500; color:var(--text-3); text-transform:uppercase; letter-spacing:0.08em; margin-bottom:8px;">{t.language}</div>
         <select
-          value={settings.language}
+          value={$settingsStore.language}
           onchange={(e) => patch({ language: (e.currentTarget as HTMLSelectElement).value as Language })}
           style="width:100%; padding:9px 12px; border-radius:var(--r-md); background:var(--bg-3); border:1px solid var(--border-2); color:var(--text-1); font-family:var(--font); font-size:13px; outline:none;"
         >
@@ -151,14 +156,19 @@
         <div style="font-size:11px; font-weight:500; color:var(--text-3); text-transform:uppercase; letter-spacing:0.08em; margin-bottom:8px;">{t.outputFormat}</div>
         <div style="display:flex; gap:2px; background:var(--bg-3); border-radius:var(--r-md); padding:3px;">
           {#each FORMAT_ROW_1 as f (f.v)}
-            {@render segBtn(settings.format === f.v, f.l, () => patch({ format: f.v }), f.disabled)}
+            {@render segBtn($settingsStore.format === f.v, f.l, () => patch({ format: f.v }), f.disabled)}
           {/each}
         </div>
         <div style="display:flex; gap:2px; background:var(--bg-3); border-radius:var(--r-md); padding:3px; margin-top:4px;">
           {#each FORMAT_ROW_2 as f (f.v)}
-            {@render segBtn(settings.format === f.v, f.l, () => patch({ format: f.v }), f.disabled)}
+            {@render segBtn($settingsStore.format === f.v, f.l, () => patch({ format: f.v }), f.v === "pdf" ? pdfDisabled : f.disabled)}
           {/each}
         </div>
+        {#if pdfDisabled}
+          <p style="font-size:10px; color:var(--text-4); margin-top:6px; line-height:1.5;">
+            {t.pdfUnavailableForLang}
+          </p>
+        {/if}
       </div>
 
       <div style="height:1px; background:var(--border-1); margin:2px 0;"></div>
@@ -168,7 +178,7 @@
         <div style="position:relative;">
           <input
             type={showKey ? "text" : "password"}
-            value={settings.apiKey}
+            value={$settingsStore.apiKey}
             oninput={(e) => patch({ apiKey: (e.currentTarget as HTMLInputElement).value })}
             placeholder={t.apiKeyPlaceholder}
             spellcheck="false"
@@ -212,7 +222,7 @@
       "
     >
       <span>Groq API</span>
-      <span>{settings.model}</span>
+      <span>{$settingsStore.model}</span>
     </div>
 </div>
 

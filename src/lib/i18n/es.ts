@@ -23,6 +23,7 @@ export const t = {
   language: "Idioma del audio",
   languageAuto: "Auto-detectar",
   outputFormat: "Formato de salida",
+  pdfUnavailableForLang: "PDF no disponible para japonés/chino (la fuente integrada no incluye esos glifos).",
 
   // Drop zone
   dropHero: "Arrastra tus videos aquí",

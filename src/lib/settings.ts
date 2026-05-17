@@ -1,4 +1,5 @@
 import { load, type Store } from "@tauri-apps/plugin-store";
+import { writable, type Writable } from "svelte/store";
 
 export type Model = "whisper-large-v3-turbo" | "whisper-large-v3";
 export type Language =
@@ -60,4 +61,20 @@ export async function updateSettings(patch: Partial<AppSettings>): Promise<void>
   if (patch.model !== undefined) await store.set(MODEL_KEY, patch.model);
   if (patch.language !== undefined) await store.set(LANG_KEY, patch.language);
   if (patch.format !== undefined) await store.set(FORMAT_KEY, patch.format);
+}
+
+export const settingsStore: Writable<AppSettings> = writable(DEFAULTS);
+
+let initialized = false;
+export async function initSettings(): Promise<void> {
+  if (initialized) return;
+  const s = await getSettings();
+  settingsStore.set(s);
+  initialized = true;
+}
+
+export async function patchSettings(p: Partial<AppSettings>): Promise<void> {
+  const apiKey = p.apiKey !== undefined ? p.apiKey.trim() : undefined;
+  settingsStore.update((s) => ({ ...s, ...p, ...(apiKey !== undefined ? { apiKey } : {}) }));
+  await updateSettings(p);
 }

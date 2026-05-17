@@ -261,6 +261,12 @@ fn wrap_line(line: &str, max_chars: usize) -> Vec<String> {
 }
 
 fn save_pdf(text: &str, path: &str) -> Result<(), String> {
+    if text.chars().any(|c| c as u32 > 0xFF) {
+        return Err(
+            "El formato PDF solo soporta caracteres Latin-1. Usa DOCX, MD o TXT para este texto."
+                .to_string(),
+        );
+    }
     let (doc, page1, layer1) =
         PdfDocument::new("Transcripción", Mm(210.0), Mm(297.0), "Layer 1");
     let font = doc

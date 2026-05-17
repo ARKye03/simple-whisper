@@ -1,14 +1,6 @@
 <script lang="ts">
   import { t } from "$lib/i18n/es";
-  import { getSettings } from "$lib/settings";
-  import { onMount } from "svelte";
-
-  let model = $state("whisper-large-v3-turbo");
-
-  onMount(async () => {
-    const s = await getSettings();
-    model = s.model;
-  });
+  import { settingsStore } from "$lib/settings";
 </script>
 
 <footer
@@ -27,5 +19,5 @@
   "
 >
   <span>{t.brand}</span>
-  <span>Groq · {model}</span>
+  <span>Groq · {$settingsStore.model}</span>
 </footer>
