@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use docx_rs::{Docx, Paragraph, Run};
+use keyring::Entry;
 use printpdf::{BuiltinFont, Mm, PdfDocument};
 use reqwest::multipart;
 use tauri::AppHandle;
@@ -8,6 +9,36 @@ use tauri_plugin_shell::ShellExt;
 
 const MAX_CHUNK_BYTES: u64 = 24 * 1024 * 1024;
 const SEGMENT_SECONDS: &str = "5400";
+const KEYCHAIN_SERVICE: &str = "com.arkye03.simple-whisper";
+const KEYCHAIN_ACCOUNT: &str = "groq_api_key";
+
+fn api_key_entry() -> Result<Entry, String> {
+    Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn keychain_get_api_key() -> Result<String, String> {
+    let entry = api_key_entry()?;
+    match entry.get_password() {
+        Ok(s) => Ok(s),
+        Err(keyring::Error::NoEntry) => Ok(String::new()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+fn keychain_set_api_key(key: String) -> Result<(), String> {
+    let trimmed = key.trim();
+    let entry = api_key_entry()?;
+    if trimmed.is_empty() {
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
+    } else {
+        entry.set_password(trimmed).map_err(|e| e.to_string())
+    }
+}
 
 fn temp_dir() -> PathBuf {
     std::env::temp_dir().join("simple-whisper")
@@ -328,6 +359,8 @@ pub fn run() {
             transcribe_audio,
             transcribe_video,
             save_transcript,
+            keychain_get_api_key,
+            keychain_set_api_key,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

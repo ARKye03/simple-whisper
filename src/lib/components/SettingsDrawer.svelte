@@ -4,7 +4,9 @@
   import { setTheme, loadTheme, type Theme } from "$lib/theme";
   import {
     settingsStore,
+    apiKeyBackend,
     patchSettings,
+    isValidGroqKey,
     type AppSettings,
     type Model,
     type Language,
@@ -15,6 +17,9 @@
 
   let theme = $state<Theme>("system");
   let showKey = $state(false);
+  let apiKeySaveState = $state<"idle" | "saving" | "saved" | "error">("idle");
+  let apiKeySaveTimer: ReturnType<typeof setTimeout> | null = null;
+  let apiKeyDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   onMount(async () => {
     theme = await loadTheme();
@@ -22,6 +27,10 @@
 
   const pdfDisabled = $derived(
     $settingsStore.language === "ja" || $settingsStore.language === "zh",
+  );
+
+  const apiKeyValid = $derived(
+    $settingsStore.apiKey.length === 0 || isValidGroqKey($settingsStore.apiKey),
   );
 
   async function patch(p: Partial<AppSettings>) {
@@ -35,6 +44,22 @@
       return;
     }
     await patchSettings(p);
+  }
+
+  function onApiKeyInput(value: string) {
+    settingsStore.update((s) => ({ ...s, apiKey: value }));
+    if (apiKeyDebounceTimer) clearTimeout(apiKeyDebounceTimer);
+    apiKeyDebounceTimer = setTimeout(async () => {
+      apiKeySaveState = "saving";
+      try {
+        await patchSettings({ apiKey: value });
+        apiKeySaveState = "saved";
+        if (apiKeySaveTimer) clearTimeout(apiKeySaveTimer);
+        apiKeySaveTimer = setTimeout(() => (apiKeySaveState = "idle"), 2000);
+      } catch {
+        apiKeySaveState = "error";
+      }
+    }, 350);
   }
 
   async function chooseTheme(next: Theme) {
@@ -179,14 +204,15 @@
           <input
             type={showKey ? "text" : "password"}
             value={$settingsStore.apiKey}
-            oninput={(e) => patch({ apiKey: (e.currentTarget as HTMLInputElement).value })}
+            oninput={(e) => onApiKeyInput((e.currentTarget as HTMLInputElement).value)}
             placeholder={t.apiKeyPlaceholder}
             spellcheck="false"
             autocomplete="off"
             style="
               width:100%; padding:9px 12px; padding-right:40px;
               border-radius:var(--r-md); background:var(--bg-3);
-              border:1px solid var(--border-2); color:var(--text-1);
+              border:1px solid {apiKeyValid ? 'var(--border-2)' : 'var(--error)'};
+              color:var(--text-1);
               font-family: {showKey ? 'var(--font)' : 'ui-monospace, monospace'};
               font-size:12px;
               letter-spacing: {showKey ? '0' : '0.08em'};
@@ -207,8 +233,33 @@
             <Icon name={showKey ? "eye-off" : "eye"} size={16} />
           </button>
         </div>
+        <div style="margin-top:6px; min-height:16px; font-size:10px; line-height:1.5; display:flex; align-items:center; gap:6px;">
+          {#if apiKeySaveState === "saving"}
+            <span style="color: var(--text-3); display:inline-flex; align-items:center; gap:5px;">
+              <Icon name="spinner" size={11} /> {t.apiKeySaving}
+            </span>
+          {:else if apiKeySaveState === "saved"}
+            <span style="color: var(--success); display:inline-flex; align-items:center; gap:5px;">
+              <Icon name="check" size={11} /> {t.apiKeySaved}
+            </span>
+          {:else if apiKeySaveState === "error"}
+            <span style="color: var(--error);">⚠ Error</span>
+          {:else if $settingsStore.apiKey && !apiKeyValid}
+            <span style="color: var(--error);">{t.apiKeyInvalid}</span>
+          {:else if $settingsStore.apiKey && apiKeyValid}
+            <span style="color: var(--success); display:inline-flex; align-items:center; gap:5px;">
+              <Icon name="check" size={11} /> {t.apiKeyValid}
+            </span>
+          {/if}
+        </div>
         <p style="font-size:10px; color:var(--text-4); margin-top:6px; line-height:1.5;">
-          {t.apiKeyHint}
+          {#if $apiKeyBackend === "keychain"}
+            🔒 {t.apiKeyBackendKeychain}
+          {:else if $apiKeyBackend === "store"}
+            📄 {t.apiKeyBackendStore}
+          {:else}
+            {t.apiKeyHint}
+          {/if}
         </p>
       </div>
     </div>
