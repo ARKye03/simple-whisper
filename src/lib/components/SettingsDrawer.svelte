@@ -13,9 +13,6 @@
   import { t } from "$lib/i18n/es";
   import Icon from "./Icons.svelte";
 
-  let open = $state(false);
-  settingsOpen.subscribe((v) => (open = v));
-
   let settings = $state<AppSettings>({
     apiKey: "",
     model: "whisper-large-v3-turbo",
@@ -90,20 +87,17 @@
   >{label}</button>
 {/snippet}
 
-{#if open}
-  <div
-    onclick={close}
-    role="presentation"
-    style="position:fixed; inset:0; background: rgba(0,0,0,.45); z-index:50; animation: fadeIn .15s ease;"
-  ></div>
-  <div
-    style="
-      position:fixed; top:0; right:0; bottom:0; width:330px;
-      background: var(--bg-1); border-left: 1px solid var(--border-1);
-      z-index:51; display:flex; flex-direction:column;
-      animation: slideIn .22s var(--t-slow);
-    "
-  >
+<div
+  class="drawer-backdrop"
+  class:open={$settingsOpen}
+  onclick={close}
+  role="presentation"
+></div>
+<div
+  class="drawer-panel"
+  class:open={$settingsOpen}
+  inert={!$settingsOpen}
+>
     <div
       style="
         display:flex; align-items:center; justify-content:space-between;
@@ -220,5 +214,38 @@
       <span>Groq API</span>
       <span>{settings.model}</span>
     </div>
-  </div>
-{/if}
+</div>
+
+<style>
+  .drawer-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    z-index: 50;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s ease;
+  }
+  .drawer-backdrop.open {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .drawer-panel {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 330px;
+    background: var(--bg-1);
+    border-left: 1px solid var(--border-1);
+    z-index: 51;
+    display: flex;
+    flex-direction: column;
+    transform: translateX(100%);
+    transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+    will-change: transform;
+  }
+  .drawer-panel.open {
+    transform: translateX(0);
+  }
+</style>
