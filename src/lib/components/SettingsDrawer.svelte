@@ -58,6 +58,8 @@
         apiKeySaveTimer = setTimeout(() => (apiKeySaveState = "idle"), 2000);
       } catch {
         apiKeySaveState = "error";
+        if (apiKeySaveTimer) clearTimeout(apiKeySaveTimer);
+        apiKeySaveTimer = setTimeout(() => (apiKeySaveState = "idle"), 3000);
       }
     }, 350);
   }

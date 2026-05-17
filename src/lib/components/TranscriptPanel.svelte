@@ -8,6 +8,8 @@
   let { text, fileName }: Props = $props();
 
   let copied = $state(false);
+  let downloadError = $state<string | null>(null);
+  let downloadErrorTimer: ReturnType<typeof setTimeout> | null = null;
 
   async function handleCopy() {
     try {
@@ -21,13 +23,24 @@
     return name.replace(/\.[^./\\]+$/, "");
   }
 
+  function showDownloadError(msg: string) {
+    downloadError = msg;
+    if (downloadErrorTimer) clearTimeout(downloadErrorTimer);
+    downloadErrorTimer = setTimeout(() => (downloadError = null), 5000);
+  }
+
   async function downloadAs(format: "txt" | "md" | "docx" | "pdf") {
     const path = await save({
       defaultPath: `${baseName(fileName)}.${format}`,
       filters: [{ name: format.toUpperCase(), extensions: [format] }],
     });
     if (!path) return;
-    await invoke("save_transcript", { text, path, format });
+    try {
+      await invoke("save_transcript", { text, path, format });
+      downloadError = null;
+    } catch (e) {
+      showDownloadError(String(e));
+    }
   }
 </script>
 
@@ -57,6 +70,17 @@
       <Icon name="download" size={11} /> .pdf
     </button>
   </div>
+  {#if downloadError}
+    <div
+      style="
+        font-size:11px; color: var(--error);
+        background: var(--error-muted); border: 1px solid var(--error);
+        border-radius: var(--r-sm); padding: 6px 8px; margin-bottom: 10px;
+        white-space: pre-wrap;
+      "
+      role="alert"
+    >{downloadError}</div>
+  {/if}
   <div
     style="
       font-size:12.5px; line-height:1.75; color:var(--text-2);

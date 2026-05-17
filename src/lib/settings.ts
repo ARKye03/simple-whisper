@@ -107,7 +107,10 @@ async function migrateLegacyApiKey(): Promise<void> {
   const store = await getStore();
   const legacy = await store.get<string>(API_KEY_LEGACY);
   if (typeof legacy === "string" && legacy.trim()) {
-    await saveApiKey(legacy);
+    const current = await loadApiKey().catch(() => ({ key: "", backend: "none" as const }));
+    if (!current.key) {
+      await saveApiKey(legacy);
+    }
   }
   if (legacy !== undefined) {
     await store.delete(API_KEY_LEGACY);
