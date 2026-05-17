@@ -1,16 +1,33 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use docx_rs::{Docx, Paragraph, Run};
 use keyring::Entry;
 use printpdf::{BuiltinFont, Mm, PdfDocument};
 use reqwest::multipart;
-use tauri::AppHandle;
-use tauri_plugin_shell::ShellExt;
+use tokio::process::Command;
 
 const MAX_CHUNK_BYTES: u64 = 24 * 1024 * 1024;
 const SEGMENT_SECONDS: &str = "5400";
 const KEYCHAIN_SERVICE: &str = "com.arkye03.simple-whisper";
 const KEYCHAIN_ACCOUNT: &str = "groq_api_key";
+
+// macOS GUI apps launched from Finder inherit only a minimal PATH
+// (/usr/bin:/bin:/usr/sbin:/sbin), so Homebrew/MacPorts binaries are invisible
+// to a plain `Command::new("ffmpeg")`. Probe common install locations first.
+fn resolve_ffmpeg() -> String {
+    const CANDIDATES: &[&str] = &[
+        "/opt/homebrew/bin/ffmpeg",
+        "/usr/local/bin/ffmpeg",
+        "/opt/local/bin/ffmpeg",
+        "/usr/bin/ffmpeg",
+    ];
+    for c in CANDIDATES {
+        if Path::new(c).is_file() {
+            return (*c).to_string();
+        }
+    }
+    "ffmpeg".to_string()
+}
 
 fn api_key_entry() -> Result<Entry, String> {
     Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT).map_err(|e| e.to_string())
@@ -51,10 +68,8 @@ fn ensure_temp_dir() -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
-async fn check_ffmpeg(app: AppHandle) -> Result<String, String> {
-    let output = app
-        .shell()
-        .command("ffmpeg")
+async fn check_ffmpeg() -> Result<String, String> {
+    let output = Command::new(resolve_ffmpeg())
         .args(["-version"])
         .output()
         .await
@@ -69,14 +84,12 @@ async fn check_ffmpeg(app: AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn extract_audio(app: AppHandle, video_path: String) -> Result<String, String> {
+async fn extract_audio(video_path: String) -> Result<String, String> {
     let dir = ensure_temp_dir()?;
     let audio_path = dir.join("audio.mp3");
     let audio_str = audio_path.to_string_lossy().to_string();
 
-    let output = app
-        .shell()
-        .command("ffmpeg")
+    let output = Command::new(resolve_ffmpeg())
         .args([
             "-i",
             &video_path,
@@ -105,7 +118,7 @@ async fn extract_audio(app: AppHandle, video_path: String) -> Result<String, Str
 }
 
 #[tauri::command]
-async fn chunk_audio(app: AppHandle, audio_path: String) -> Result<Vec<String>, String> {
+async fn chunk_audio(audio_path: String) -> Result<Vec<String>, String> {
     let size = std::fs::metadata(&audio_path)
         .map_err(|e| e.to_string())?
         .len();
@@ -119,9 +132,7 @@ async fn chunk_audio(app: AppHandle, audio_path: String) -> Result<Vec<String>, 
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let pattern = dir.join("chunk_%03d.mp3").to_string_lossy().to_string();
 
-    let output = app
-        .shell()
-        .command("ffmpeg")
+    let output = Command::new(resolve_ffmpeg())
         .args([
             "-i",
             &audio_path,
@@ -218,7 +229,6 @@ async fn transcribe_audio(
 
 #[tauri::command]
 async fn transcribe_video(
-    app: AppHandle,
     video_path: String,
     api_key: String,
     model: Option<String>,
@@ -232,8 +242,8 @@ async fn transcribe_video(
         .unwrap_or_else(|| "whisper-large-v3-turbo".to_string());
     let language = language.unwrap_or_else(|| "auto".to_string());
 
-    let audio = extract_audio(app.clone(), video_path).await?;
-    let chunks = chunk_audio(app, audio).await?;
+    let audio = extract_audio(video_path).await?;
+    let chunks = chunk_audio(audio).await?;
 
     let mut out = String::new();
     for chunk in chunks {
@@ -350,7 +360,6 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::new().build())
-        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             check_ffmpeg,
