@@ -83,4 +83,16 @@ export const t = {
   brand: "Simple Whisper · 2026",
   poweredBy: "Groq · Whisper",
   poweredByGemini: "Google · Gemini 3.1 Flash-Lite",
+
+  // Updates
+  updates: "Actualizaciones",
+  checkForUpdates: "Buscar actualizaciones",
+  checkingForUpdates: "Buscando…",
+  updateUpToDate: "Ya tienes la última versión.",
+  updateAvailableTitle: "Actualización disponible",
+  updateInstall: "Instalar",
+  updateLater: "Después",
+  updateAvailableBody: (version: string, notes: string) =>
+    `Versión ${version} disponible.${notes ? `\n\n${notes}` : ""}\n\n¿Instalar ahora?`,
+  updateCheckFailed: "No se pudo comprobar actualizaciones.",
 };
