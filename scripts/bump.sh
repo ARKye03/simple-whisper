@@ -53,7 +53,9 @@ printf '%s\n' "$RAW" > VERSION
 
 pnpm version "$RAW" --no-git-tag-version >/dev/null
 
-sed -i '' -E '1,/^version = /s/^version = .*/version = "'"$RAW"'"/' src-tauri/Cargo.toml
+CARGO_TMP="$(mktemp)"
+sed -E '1,/^version = /s/^version = .*/version = "'"$RAW"'"/' src-tauri/Cargo.toml > "$CARGO_TMP"
+mv "$CARGO_TMP" src-tauri/Cargo.toml
 
 (cd src-tauri && cargo update -p simple-whisper --quiet)
 
