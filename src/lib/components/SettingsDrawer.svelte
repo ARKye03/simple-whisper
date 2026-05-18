@@ -299,10 +299,8 @@
           {/if}
         </div>
         <p style="font-size:10px; color:var(--text-4); margin-top:6px; line-height:1.5;">
-          {#if $apiKeyBackend === "keychain"}
-            🔒 {t.apiKeyBackendKeychain}
-          {:else if $apiKeyBackend === "store"}
-            📄 {t.apiKeyBackendStore}
+          {#if $apiKeyBackend === "encrypted"}
+            🔒 {t.apiKeyBackendEncrypted}
           {:else}
             {t.apiKeyHint}
           {/if}
