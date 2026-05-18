@@ -4,6 +4,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { loadTheme } from "$lib/theme";
   import { initSettings } from "$lib/settings";
+  import { checkForUpdates } from "$lib/updater";
   import { t } from "$lib/i18n/es";
   import Header from "$lib/components/Header.svelte";
   import Footer from "$lib/components/Footer.svelte";
@@ -22,6 +23,9 @@
     } catch {
       ffmpegStatus = "missing";
     }
+    checkForUpdates({ silent: true }).catch((err) =>
+      console.error("Silent update check failed:", err),
+    );
   });
 </script>
 

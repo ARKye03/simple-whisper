@@ -18,10 +18,12 @@
     type OutputFormat,
   } from "$lib/settings";
   import { t } from "$lib/i18n/es";
+  import { checkForUpdates } from "$lib/updater";
   import Icon from "./Icons.svelte";
 
   let theme = $state<Theme>("system");
   let showKey = $state(false);
+  let updateChecking = $state(false);
   let apiKeySaveState = $state<"idle" | "saving" | "saved" | "error">("idle");
   let apiKeySaveTimer: ReturnType<typeof setTimeout> | null = null;
   let apiKeyDebounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -100,6 +102,16 @@
 
   function close() {
     settingsOpen.set(false);
+  }
+
+  async function onCheckForUpdates() {
+    if (updateChecking) return;
+    updateChecking = true;
+    try {
+      await checkForUpdates({ silent: false });
+    } finally {
+      updateChecking = false;
+    }
   }
 
   const themes: { v: Theme; l: string }[] = [
@@ -337,6 +349,30 @@
             {t.apiKeyHint}
           {/if}
         </p>
+      </div>
+
+      <div style="height:1px; background:var(--border-1); margin:2px 0;"></div>
+
+      <div>
+        <div style="font-size:11px; font-weight:500; color:var(--text-3); text-transform:uppercase; letter-spacing:0.08em; margin-bottom:8px;">{t.updates}</div>
+        <button
+          onclick={onCheckForUpdates}
+          disabled={updateChecking}
+          style="
+            width:100%; padding:9px 12px; border-radius:var(--r-md);
+            background:var(--bg-3); border:1px solid var(--border-2);
+            color:var(--text-1); font-family:var(--font); font-size:13px;
+            cursor: {updateChecking ? 'wait' : 'pointer'};
+            display:flex; align-items:center; justify-content:center; gap:8px;
+            transition: background var(--t);
+          "
+        >
+          {#if updateChecking}
+            <Icon name="spinner" size={13} /> {t.checkingForUpdates}
+          {:else}
+            {t.checkForUpdates}
+          {/if}
+        </button>
       </div>
     </div>
 
