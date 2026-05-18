@@ -51,7 +51,7 @@ echo "Bumping to $TAG ($RAW)..."
 
 printf '%s\n' "$RAW" > VERSION
 
-pnpm version "$RAW" --no-git-tag-version >/dev/null
+node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json","utf8"));p.version=process.argv[1];fs.writeFileSync("package.json",JSON.stringify(p,null,2)+"\n");' "$RAW"
 
 CARGO_TMP="$(mktemp)"
 sed -E '1,/^version = /s/^version = .*/version = "'"$RAW"'"/' src-tauri/Cargo.toml > "$CARGO_TMP"
