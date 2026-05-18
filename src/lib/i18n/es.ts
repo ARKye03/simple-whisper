@@ -1,4 +1,4 @@
-export const t = {
+export const es = {
   appTitle: "Simple Whisper",
 
   // Header / drawer
@@ -29,6 +29,7 @@ export const t = {
   apiKeyMissing: "Configura tu clave API en Ajustes antes de transcribir.",
   show: "Mostrar",
   hide: "Ocultar",
+  closeAria: "Cerrar",
 
   // Theme
   theme: "Tema",
@@ -36,6 +37,12 @@ export const t = {
   themeLight: "Claro",
   themeDark: "Oscuro",
   themeSystem: "Sistema",
+
+  // UI language
+  uiLanguage: "Idioma de la interfaz",
+  uiLanguageSystem: "Sistema",
+  uiLanguageEs: "Español",
+  uiLanguageEn: "English",
 
   // Settings sections
   model: "Modelo",
@@ -67,6 +74,7 @@ export const t = {
   copy: "Copiar",
   copied: "Copiado",
   download: "Descargar",
+  speakerLabel: "Hablante",
 
   // FFmpeg
   ffmpegMissing:
@@ -93,3 +101,5 @@ export const t = {
     `Versión ${version} disponible.${notes ? `\n\n${notes}` : ""}\n\n¿Instalar ahora?`,
   updateCheckFailed: "No se pudo comprobar actualizaciones.",
 };
+
+export type Dict = typeof es;

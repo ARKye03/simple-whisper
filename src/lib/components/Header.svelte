@@ -1,7 +1,7 @@
 <script lang="ts">
   import { settingsOpen } from "$lib/drawer";
   import Icon from "./Icons.svelte";
-  import { t } from "$lib/i18n/es";
+  import { t } from "$lib/i18n/state.svelte";
 </script>
 
 <header

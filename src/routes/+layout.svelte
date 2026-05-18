@@ -5,7 +5,7 @@
   import { loadTheme } from "$lib/theme";
   import { initSettings } from "$lib/settings";
   import { checkForUpdates } from "$lib/updater";
-  import { t } from "$lib/i18n/es";
+  import { t } from "$lib/i18n/state.svelte";
   import Header from "$lib/components/Header.svelte";
   import Footer from "$lib/components/Footer.svelte";
   import SettingsDrawer from "$lib/components/SettingsDrawer.svelte";

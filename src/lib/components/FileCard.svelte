@@ -1,7 +1,7 @@
 <script lang="ts">
   import Icon from "./Icons.svelte";
   import TranscriptPanel from "./TranscriptPanel.svelte";
-  import { t } from "$lib/i18n/es";
+  import { t } from "$lib/i18n/state.svelte";
   import { fmtSize, type FileItem } from "$lib/types";
 
   type Props = {
@@ -12,12 +12,12 @@
   };
   let { file, expanded, onRemove, onToggle }: Props = $props();
 
-  const STATUS = {
+  const STATUS = $derived({
     queued: { bg: "var(--bg-4)", color: "var(--text-3)", label: t.statusQueued },
     processing: { bg: "var(--accent-muted)", color: "var(--accent)", label: t.statusProcessing },
     completed: { bg: "var(--success-muted)", color: "var(--success)", label: t.statusCompleted },
     error: { bg: "var(--error-muted)", color: "var(--error)", label: t.statusError },
-  } as const;
+  });
 
   const st = $derived(STATUS[file.status]);
   const isClickable = $derived(file.status === "completed" || file.status === "error");

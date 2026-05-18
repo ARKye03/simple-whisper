@@ -3,7 +3,7 @@
   import { open } from "@tauri-apps/plugin-dialog";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import Icon from "./Icons.svelte";
-  import { t } from "$lib/i18n/es";
+  import { t } from "$lib/i18n/state.svelte";
   import { MEDIA_EXT, extOf } from "$lib/types";
 
   type Props = {

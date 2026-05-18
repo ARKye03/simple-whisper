@@ -1,7 +1,7 @@
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { ask, message } from "@tauri-apps/plugin-dialog";
-import { t } from "$lib/i18n/es";
+import { t } from "$lib/i18n/state.svelte";
 
 export async function checkForUpdates({ silent }: { silent: boolean }): Promise<void> {
   try {

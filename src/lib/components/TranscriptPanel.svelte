@@ -2,7 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { save } from "@tauri-apps/plugin-dialog";
   import Icon from "./Icons.svelte";
-  import { t } from "$lib/i18n/es";
+  import { t } from "$lib/i18n/state.svelte";
   import { transcriptToPlainText, type Transcript } from "$lib/types";
 
   type Props = { transcript: Transcript; fileName: string };
@@ -104,7 +104,7 @@
     {#if isDiarized && transcript.kind === "diarized"}
       {#each transcript.segments as seg, i (i)}
         <div style="margin-bottom:8px;">
-          <span style="font-weight:600; color:var(--text-1);">Hablante {seg.speaker}:</span>
+          <span style="font-weight:600; color:var(--text-1);">{t.speakerLabel} {seg.speaker}:</span>
           <span> {seg.text}</span>
         </div>
       {/each}

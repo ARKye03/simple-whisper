@@ -16,7 +16,7 @@
     type Provider,
     type Language,
   } from "$lib/settings";
-  import { t } from "$lib/i18n/es";
+  import { t, type UiLanguagePref } from "$lib/i18n/state.svelte";
   import { checkForUpdates } from "$lib/updater";
   import Icon from "./Icons.svelte";
 
@@ -100,18 +100,24 @@
     }
   }
 
-  const themes: { v: Theme; l: string }[] = [
+  const themes: { v: Theme; l: string }[] = $derived([
     { v: "light", l: t.themeLight },
     { v: "dark", l: t.themeDark },
     { v: "system", l: t.themeSystem },
-  ];
+  ]);
 
-  const providers: { v: Provider; l: string }[] = [
+  const uiLanguages: { v: UiLanguagePref; l: string }[] = $derived([
+    { v: "system", l: t.uiLanguageSystem },
+    { v: "es", l: t.uiLanguageEs },
+    { v: "en", l: t.uiLanguageEn },
+  ]);
+
+  const providers: { v: Provider; l: string }[] = $derived([
     { v: "groq", l: t.providerGroq },
     { v: "gemini", l: t.providerGemini },
-  ];
+  ]);
 
-  const languages: { v: Language; l: string }[] = [
+  const languages: { v: Language; l: string }[] = $derived([
     { v: "auto", l: t.languageAuto },
     { v: "es", l: "Español" },
     { v: "en", l: "English" },
@@ -121,7 +127,7 @@
     { v: "it", l: "Italiano" },
     { v: "ja", l: "日本語" },
     { v: "zh", l: "中文" },
-  ];
+  ]);
 
   const GROQ_MODELS: GroqModel[] = ["whisper-large-v3-turbo", "whisper-large-v3"];
   const GEMINI_MODELS: GeminiModel[] = ["gemini-3.1-flash-lite", "gemini-3-flash-preview"];
@@ -162,7 +168,7 @@
       "
     >
       <span style="font-size:14px; font-weight:600;">{t.settings}</span>
-      <button class="icon-btn" style="width:32px; height:32px;" onclick={close} aria-label="Cerrar">
+      <button class="icon-btn" style="width:32px; height:32px;" onclick={close} aria-label={t.closeAria}>
         <Icon name="x" size={18} />
       </button>
     </div>
@@ -175,6 +181,15 @@
         <div style="display:flex; gap:2px; background:var(--bg-3); border-radius:var(--r-md); padding:3px;">
           {#each themes as opt (opt.v)}
             {@render segBtn(theme === opt.v, opt.l, () => chooseTheme(opt.v))}
+          {/each}
+        </div>
+      </div>
+
+      <div>
+        <div style="font-size:11px; font-weight:500; color:var(--text-3); text-transform:uppercase; letter-spacing:0.08em; margin-bottom:8px;">{t.uiLanguage}</div>
+        <div style="display:flex; gap:2px; background:var(--bg-3); border-radius:var(--r-md); padding:3px;">
+          {#each uiLanguages as opt (opt.v)}
+            {@render segBtn($settingsStore.uiLanguage === opt.v, opt.l, () => patch({ uiLanguage: opt.v }))}
           {/each}
         </div>
       </div>
