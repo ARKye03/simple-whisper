@@ -42,8 +42,6 @@ export const t = {
   model: "Modelo",
   language: "Idioma del audio",
   languageAuto: "Auto-detectar",
-  outputFormat: "Formato de salida",
-  pdfUnavailableForLang: "PDF no disponible para japonés/chino (la fuente integrada no incluye esos glifos).",
   diarize: "Diarización",
   diarizeHint: "Separar e identificar hablantes (solo Gemini).",
 

@@ -8,7 +8,6 @@ export type GeminiModel = "gemini-3.1-flash-lite" | "gemini-3-flash-preview";
 export type Model = GroqModel | GeminiModel;
 export type Language =
   | "auto" | "es" | "en" | "fr" | "de" | "pt" | "it" | "ja" | "zh";
-export type OutputFormat = "txt" | "md" | "docx" | "pdf";
 export type ApiKeyBackend = "keychain" | "store" | "none";
 
 export type AppSettings = {
@@ -18,7 +17,6 @@ export type AppSettings = {
   groqModel: GroqModel;
   geminiModel: GeminiModel;
   language: Language;
-  format: OutputFormat;
   diarize: boolean;
 };
 
@@ -28,7 +26,6 @@ const PROVIDER_KEY = "provider";
 const GROQ_MODEL_KEY = "groq_model";
 const GEMINI_MODEL_KEY = "gemini_model";
 const LANG_KEY = "language";
-const FORMAT_KEY = "format";
 const DIARIZE_KEY = "diarize";
 
 const DEFAULTS: AppSettings = {
@@ -38,7 +35,6 @@ const DEFAULTS: AppSettings = {
   groqModel: "whisper-large-v3-turbo",
   geminiModel: "gemini-3.1-flash-lite",
   language: "auto",
-  format: "docx",
   diarize: true,
 };
 
@@ -139,7 +135,6 @@ export async function getSettings(): Promise<AppSettings> {
     geminiModel:
       (await store.get<GeminiModel>(GEMINI_MODEL_KEY)) ?? DEFAULTS.geminiModel,
     language: (await store.get<Language>(LANG_KEY)) ?? DEFAULTS.language,
-    format: (await store.get<OutputFormat>(FORMAT_KEY)) ?? DEFAULTS.format,
     diarize: (await store.get<boolean>(DIARIZE_KEY)) ?? DEFAULTS.diarize,
   };
 }
@@ -152,7 +147,6 @@ async function updateSettings(patch: Partial<AppSettings>): Promise<void> {
   if (patch.groqModel !== undefined) await store.set(GROQ_MODEL_KEY, patch.groqModel);
   if (patch.geminiModel !== undefined) await store.set(GEMINI_MODEL_KEY, patch.geminiModel);
   if (patch.language !== undefined) await store.set(LANG_KEY, patch.language);
-  if (patch.format !== undefined) await store.set(FORMAT_KEY, patch.format);
   if (patch.diarize !== undefined) await store.set(DIARIZE_KEY, patch.diarize);
 }
 

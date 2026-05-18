@@ -15,7 +15,6 @@
     type GeminiModel,
     type Provider,
     type Language,
-    type OutputFormat,
   } from "$lib/settings";
   import { t } from "$lib/i18n/es";
   import { checkForUpdates } from "$lib/updater";
@@ -31,10 +30,6 @@
   onMount(async () => {
     theme = await loadTheme();
   });
-
-  const pdfDisabled = $derived(
-    $settingsStore.language === "ja" || $settingsStore.language === "zh",
-  );
 
   const isGemini = $derived($settingsStore.provider === "gemini");
   const currentKey = $derived(activeApiKey($settingsStore));
@@ -52,15 +47,6 @@
   );
 
   async function patch(p: Partial<AppSettings>) {
-    // Auto-switch off pdf when language moves to a script Helvetica builtin can't encode.
-    if (
-      p.language &&
-      (p.language === "ja" || p.language === "zh") &&
-      $settingsStore.format === "pdf"
-    ) {
-      await patchSettings({ ...p, format: "docx" });
-      return;
-    }
     await patchSettings(p);
   }
 
@@ -135,15 +121,6 @@
     { v: "it", l: "Italiano" },
     { v: "ja", l: "日本語" },
     { v: "zh", l: "中文" },
-  ];
-
-  const FORMAT_ROW_1: { v: OutputFormat; l: string; disabled?: boolean }[] = [
-    { v: "txt", l: "TXT" },
-    { v: "md", l: "MD" },
-  ];
-  const FORMAT_ROW_2: { v: OutputFormat; l: string; disabled?: boolean }[] = [
-    { v: "docx", l: "DOCX" },
-    { v: "pdf", l: "PDF" },
   ];
 
   const GROQ_MODELS: GroqModel[] = ["whisper-large-v3-turbo", "whisper-large-v3"];
@@ -264,25 +241,6 @@
           <p style="font-size:10px; color:var(--text-4); margin-top:6px; line-height:1.5;">{t.diarizeHint}</p>
         </div>
       {/if}
-
-      <div>
-        <div style="font-size:11px; font-weight:500; color:var(--text-3); text-transform:uppercase; letter-spacing:0.08em; margin-bottom:8px;">{t.outputFormat}</div>
-        <div style="display:flex; gap:2px; background:var(--bg-3); border-radius:var(--r-md); padding:3px;">
-          {#each FORMAT_ROW_1 as f (f.v)}
-            {@render segBtn($settingsStore.format === f.v, f.l, () => patch({ format: f.v }), f.disabled)}
-          {/each}
-        </div>
-        <div style="display:flex; gap:2px; background:var(--bg-3); border-radius:var(--r-md); padding:3px; margin-top:4px;">
-          {#each FORMAT_ROW_2 as f (f.v)}
-            {@render segBtn($settingsStore.format === f.v, f.l, () => patch({ format: f.v }), f.v === "pdf" ? pdfDisabled : f.disabled)}
-          {/each}
-        </div>
-        {#if pdfDisabled}
-          <p style="font-size:10px; color:var(--text-4); margin-top:6px; line-height:1.5;">
-            {t.pdfUnavailableForLang}
-          </p>
-        {/if}
-      </div>
 
       <div style="height:1px; background:var(--border-1); margin:2px 0;"></div>
 
