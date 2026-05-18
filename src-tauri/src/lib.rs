@@ -1,15 +1,23 @@
 use std::path::{Path, PathBuf};
 
+use base64::Engine;
 use docx_rs::{Docx, Paragraph, Run};
 use keyring::Entry;
 use printpdf::{BuiltinFont, Mm, PdfDocument};
 use reqwest::multipart;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use tokio::process::Command;
 
-const MAX_CHUNK_BYTES: u64 = 24 * 1024 * 1024;
-const SEGMENT_SECONDS: &str = "5400";
+const GROQ_CHUNK_BYTES: u64 = 24 * 1024 * 1024;
+const GROQ_SEGMENT_SECONDS: &str = "5400";
+// Gemini accepts 20MB inline; base64 inflates ~33%, so source chunk must be ≤ ~14MB.
+const GEMINI_CHUNK_BYTES: u64 = 14 * 1024 * 1024;
+const GEMINI_SEGMENT_SECONDS: &str = "1800";
+
 const KEYCHAIN_SERVICE: &str = "com.arkye03.simple-whisper";
-const KEYCHAIN_ACCOUNT: &str = "groq_api_key";
+const KEYCHAIN_ACCOUNT_GROQ: &str = "groq_api_key";
+const KEYCHAIN_ACCOUNT_GEMINI: &str = "gemini_api_key";
 
 // macOS GUI apps launched from Finder inherit only a minimal PATH
 // (/usr/bin:/bin:/usr/sbin:/sbin), so Homebrew/MacPorts binaries are invisible
@@ -29,13 +37,22 @@ fn resolve_ffmpeg() -> String {
     "ffmpeg".to_string()
 }
 
-fn api_key_entry() -> Result<Entry, String> {
-    Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT).map_err(|e| e.to_string())
+fn account_for(provider: &str) -> Result<&'static str, String> {
+    match provider {
+        "groq" => Ok(KEYCHAIN_ACCOUNT_GROQ),
+        "gemini" => Ok(KEYCHAIN_ACCOUNT_GEMINI),
+        other => Err(format!("Proveedor desconocido: {other}")),
+    }
+}
+
+fn api_key_entry(provider: &str) -> Result<Entry, String> {
+    let account = account_for(provider)?;
+    Entry::new(KEYCHAIN_SERVICE, account).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn keychain_get_api_key() -> Result<String, String> {
-    let entry = api_key_entry()?;
+fn keychain_get_api_key(provider: String) -> Result<String, String> {
+    let entry = api_key_entry(&provider)?;
     match entry.get_password() {
         Ok(s) => Ok(s),
         Err(keyring::Error::NoEntry) => Ok(String::new()),
@@ -44,9 +61,9 @@ fn keychain_get_api_key() -> Result<String, String> {
 }
 
 #[tauri::command]
-fn keychain_set_api_key(key: String) -> Result<(), String> {
+fn keychain_set_api_key(provider: String, key: String) -> Result<(), String> {
     let trimmed = key.trim();
-    let entry = api_key_entry()?;
+    let entry = api_key_entry(&provider)?;
     if trimmed.is_empty() {
         match entry.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
@@ -117,14 +134,17 @@ async fn extract_audio(video_path: String) -> Result<String, String> {
     Ok(audio_str)
 }
 
-#[tauri::command]
-async fn chunk_audio(audio_path: String) -> Result<Vec<String>, String> {
-    let size = std::fs::metadata(&audio_path)
+async fn chunk_audio_with(
+    audio_path: &str,
+    max_bytes: u64,
+    segment_seconds: &str,
+) -> Result<Vec<String>, String> {
+    let size = std::fs::metadata(audio_path)
         .map_err(|e| e.to_string())?
         .len();
 
-    if size <= MAX_CHUNK_BYTES {
-        return Ok(vec![audio_path]);
+    if size <= max_bytes {
+        return Ok(vec![audio_path.to_string()]);
     }
 
     let dir = ensure_temp_dir()?.join("chunks");
@@ -135,11 +155,11 @@ async fn chunk_audio(audio_path: String) -> Result<Vec<String>, String> {
     let output = Command::new(resolve_ffmpeg())
         .args([
             "-i",
-            &audio_path,
+            audio_path,
             "-f",
             "segment",
             "-segment_time",
-            SEGMENT_SECONDS,
+            segment_seconds,
             "-c",
             "copy",
             &pattern,
@@ -171,7 +191,35 @@ async fn chunk_audio(audio_path: String) -> Result<Vec<String>, String> {
     Ok(chunks)
 }
 
-async fn transcribe_one(
+#[tauri::command]
+async fn chunk_audio(audio_path: String) -> Result<Vec<String>, String> {
+    chunk_audio_with(&audio_path, GROQ_CHUNK_BYTES, GROQ_SEGMENT_SECONDS).await
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct TranscriptSegment {
+    pub speaker: String,
+    pub text: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum Transcript {
+    Plain { text: String },
+    Diarized {
+        segments: Vec<TranscriptSegment>,
+        text: String,
+    },
+}
+
+fn flatten_segments(segs: &[TranscriptSegment]) -> String {
+    segs.iter()
+        .map(|s| format!("Hablante {}: {}", s.speaker, s.text))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+async fn transcribe_one_groq(
     audio_path: &str,
     api_key: &str,
     model: &str,
@@ -210,68 +258,317 @@ async fn transcribe_one(
     res.text().await.map_err(|e| e.to_string())
 }
 
+fn gemini_diarize_schema() -> Value {
+    json!({
+        "type": "OBJECT",
+        "properties": {
+            "segments": {
+                "type": "ARRAY",
+                "items": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "speaker": { "type": "STRING" },
+                        "text": { "type": "STRING" }
+                    },
+                    "required": ["speaker", "text"]
+                }
+            }
+        },
+        "required": ["segments"]
+    })
+}
+
+fn gemini_prompt(diarize: bool, language: &str) -> String {
+    let lang_hint = if language.is_empty() || language == "auto" {
+        "Preserva el idioma original del audio.".to_string()
+    } else {
+        format!("Transcribe en el idioma del audio (probablemente {language}).")
+    };
+    if diarize {
+        format!(
+            "Transcribe este audio con diarización de hablantes.\n\
+            - Etiqueta cada hablante con una letra (A, B, C, ...). Mantén consistencia dentro del audio.\n\
+            - Devuelve únicamente segmentos en orden cronológico. Cada cambio de hablante o pausa larga = nuevo segmento.\n\
+            - {lang_hint}\n\
+            - No inventes contenido. Si no se entiende, escribe [inaudible].\n\
+            - Sin timestamps, sin resumen, sin metadatos. Solo segmentos."
+        )
+    } else {
+        format!(
+            "Transcribe este audio palabra por palabra.\n\
+            - {lang_hint}\n\
+            - No inventes contenido. Si no se entiende, escribe [inaudible].\n\
+            - Devuelve solo el texto, sin etiquetas ni timestamps."
+        )
+    }
+}
+
+fn audio_mime_for(path: &str) -> &'static str {
+    match Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("wav") => "audio/wav",
+        Some("m4a") | Some("mp4") | Some("aac") => "audio/mp4",
+        Some("ogg") | Some("opus") => "audio/ogg",
+        Some("flac") => "audio/flac",
+        Some("aiff") | Some("aif") => "audio/aiff",
+        _ => "audio/mpeg",
+    }
+}
+
+async fn transcribe_one_gemini(
+    audio_path: &str,
+    api_key: &str,
+    model: &str,
+    language: &str,
+    diarize: bool,
+) -> Result<GeminiResult, String> {
+    let bytes = std::fs::read(audio_path).map_err(|e| e.to_string())?;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    let mime = audio_mime_for(audio_path);
+
+    let prompt = gemini_prompt(diarize, language);
+
+    let mut body = json!({
+        "contents": [{
+            "parts": [
+                { "inline_data": { "mime_type": mime, "data": b64 } },
+                { "text": prompt }
+            ]
+        }]
+    });
+
+    if diarize {
+        body["generation_config"] = json!({
+            "response_mime_type": "application/json",
+            "response_schema": gemini_diarize_schema(),
+        });
+    }
+
+    let url = format!(
+        "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    );
+
+    let client = reqwest::Client::new();
+    let res = client
+        .post(&url)
+        .header("x-goog-api-key", api_key)
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !res.status().is_success() {
+        let status = res.status();
+        let body = res.text().await.unwrap_or_default();
+        return Err(format!("Gemini {status}: {body}"));
+    }
+
+    let resp: Value = res.json().await.map_err(|e| e.to_string())?;
+    let text = resp
+        .pointer("/candidates/0/content/parts/0/text")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| format!("Gemini: respuesta sin texto ({resp})"))?
+        .to_string();
+
+    if diarize {
+        let parsed: Value = serde_json::from_str(&text)
+            .map_err(|e| format!("Gemini: JSON inválido en respuesta ({e}): {text}"))?;
+        let segments: Vec<TranscriptSegment> = parsed
+            .get("segments")
+            .and_then(|s| s.as_array())
+            .ok_or_else(|| format!("Gemini: falta 'segments' en {parsed}"))?
+            .iter()
+            .filter_map(|item| {
+                let speaker = item.get("speaker")?.as_str()?.trim().to_string();
+                let text = item.get("text")?.as_str()?.trim().to_string();
+                if text.is_empty() {
+                    return None;
+                }
+                Some(TranscriptSegment { speaker, text })
+            })
+            .collect();
+        Ok(GeminiResult::Diarized(segments))
+    } else {
+        Ok(GeminiResult::Plain(text.trim().to_string()))
+    }
+}
+
+enum GeminiResult {
+    Plain(String),
+    Diarized(Vec<TranscriptSegment>),
+}
+
+fn default_model(provider: &str) -> &'static str {
+    match provider {
+        "gemini" => "gemini-3.1-flash-lite",
+        _ => "whisper-large-v3-turbo",
+    }
+}
+
+async fn transcribe_pipeline(
+    audio_path: String,
+    provider: &str,
+    api_key: &str,
+    model: &str,
+    language: &str,
+    diarize: bool,
+) -> Result<Transcript, String> {
+    match provider {
+        "groq" => {
+            let chunks =
+                chunk_audio_with(&audio_path, GROQ_CHUNK_BYTES, GROQ_SEGMENT_SECONDS).await?;
+            let mut out = String::new();
+            for chunk in chunks {
+                let text = transcribe_one_groq(&chunk, api_key, model, language).await?;
+                if !out.is_empty() {
+                    out.push_str("\n\n");
+                }
+                out.push_str(text.trim());
+            }
+            Ok(Transcript::Plain { text: out })
+        }
+        "gemini" => {
+            let chunks =
+                chunk_audio_with(&audio_path, GEMINI_CHUNK_BYTES, GEMINI_SEGMENT_SECONDS).await?;
+            if diarize {
+                // NOTE: speaker labels reset per chunk — Gemini doesn't see prior context.
+                // Acceptable for v1; future work could thread previous chunk's last segments.
+                let mut all_segments: Vec<TranscriptSegment> = Vec::new();
+                for chunk in chunks {
+                    match transcribe_one_gemini(&chunk, api_key, model, language, true).await? {
+                        GeminiResult::Diarized(mut segs) => all_segments.append(&mut segs),
+                        GeminiResult::Plain(t) => {
+                            all_segments.push(TranscriptSegment {
+                                speaker: "?".to_string(),
+                                text: t,
+                            });
+                        }
+                    }
+                }
+                let text = flatten_segments(&all_segments);
+                Ok(Transcript::Diarized {
+                    segments: all_segments,
+                    text,
+                })
+            } else {
+                let mut out = String::new();
+                for chunk in chunks {
+                    match transcribe_one_gemini(&chunk, api_key, model, language, false).await? {
+                        GeminiResult::Plain(t) => {
+                            if !out.is_empty() {
+                                out.push_str("\n\n");
+                            }
+                            out.push_str(&t);
+                        }
+                        GeminiResult::Diarized(segs) => {
+                            if !out.is_empty() {
+                                out.push_str("\n\n");
+                            }
+                            out.push_str(&flatten_segments(&segs));
+                        }
+                    }
+                }
+                Ok(Transcript::Plain { text: out })
+            }
+        }
+        other => Err(format!("Proveedor desconocido: {other}")),
+    }
+}
+
 #[tauri::command]
 async fn transcribe_audio(
     audio_path: String,
+    provider: String,
     api_key: String,
     model: Option<String>,
     language: Option<String>,
-) -> Result<String, String> {
+    diarize: Option<bool>,
+) -> Result<Transcript, String> {
     if api_key.trim().is_empty() {
-        return Err("Falta clave API de Groq".into());
+        return Err(format!("Falta clave API de {provider}"));
     }
     let model = model
         .filter(|m| !m.is_empty())
-        .unwrap_or_else(|| "whisper-large-v3-turbo".to_string());
+        .unwrap_or_else(|| default_model(&provider).to_string());
     let language = language.unwrap_or_else(|| "auto".to_string());
-    transcribe_one(&audio_path, &api_key, &model, &language).await
+    let diarize = diarize.unwrap_or(false);
+    transcribe_pipeline(audio_path, &provider, &api_key, &model, &language, diarize).await
 }
 
 #[tauri::command]
 async fn transcribe_video(
     video_path: String,
+    provider: String,
     api_key: String,
     model: Option<String>,
     language: Option<String>,
-) -> Result<String, String> {
+    diarize: Option<bool>,
+) -> Result<Transcript, String> {
     if api_key.trim().is_empty() {
-        return Err("Falta clave API de Groq".into());
+        return Err(format!("Falta clave API de {provider}"));
     }
     let model = model
         .filter(|m| !m.is_empty())
-        .unwrap_or_else(|| "whisper-large-v3-turbo".to_string());
+        .unwrap_or_else(|| default_model(&provider).to_string());
     let language = language.unwrap_or_else(|| "auto".to_string());
+    let diarize = diarize.unwrap_or(false);
 
     let audio = extract_audio(video_path).await?;
-    let chunks = chunk_audio(audio).await?;
-
-    let mut out = String::new();
-    for chunk in chunks {
-        let text = transcribe_one(&chunk, &api_key, &model, &language).await?;
-        if !out.is_empty() {
-            out.push_str("\n\n");
-        }
-        out.push_str(text.trim());
-    }
-    Ok(out)
+    transcribe_pipeline(audio, &provider, &api_key, &model, &language, diarize).await
 }
 
-fn save_docx(text: &str, path: &str) -> Result<(), String> {
+fn save_docx(transcript: &Transcript, path: &str) -> Result<(), String> {
     let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
     let mut doc = Docx::new();
-    for paragraph in text.split("\n\n") {
-        doc = doc.add_paragraph(Paragraph::new().add_run(Run::new().add_text(paragraph)));
+    match transcript {
+        Transcript::Plain { text } => {
+            for paragraph in text.split("\n\n") {
+                doc = doc.add_paragraph(Paragraph::new().add_run(Run::new().add_text(paragraph)));
+            }
+        }
+        Transcript::Diarized { segments, .. } => {
+            for seg in segments {
+                let label = format!("Hablante {}: ", seg.speaker);
+                doc = doc.add_paragraph(
+                    Paragraph::new()
+                        .add_run(Run::new().bold().add_text(&label))
+                        .add_run(Run::new().add_text(&seg.text)),
+                );
+            }
+        }
     }
     doc.build().pack(file).map_err(|e| e.to_string())?;
     Ok(())
 }
 
-fn save_txt(text: &str, path: &str) -> Result<(), String> {
-    std::fs::write(path, text).map_err(|e| e.to_string())
+fn save_txt(transcript: &Transcript, path: &str) -> Result<(), String> {
+    let body = match transcript {
+        Transcript::Plain { text } => text.clone(),
+        Transcript::Diarized { segments, .. } => segments
+            .iter()
+            .map(|s| format!("Hablante {}: {}", s.speaker, s.text))
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+    };
+    std::fs::write(path, body).map_err(|e| e.to_string())
 }
 
-fn save_md(text: &str, path: &str) -> Result<(), String> {
-    let body = format!("# Transcripción\n\n{}\n", text.trim_end());
+fn save_md(transcript: &Transcript, path: &str) -> Result<(), String> {
+    let body = match transcript {
+        Transcript::Plain { text } => format!("# Transcripción\n\n{}\n", text.trim_end()),
+        Transcript::Diarized { segments, .. } => {
+            let lines: Vec<String> = segments
+                .iter()
+                .map(|s| format!("**Hablante {}:** {}", s.speaker, s.text))
+                .collect();
+            format!("# Transcripción\n\n{}\n", lines.join("\n\n"))
+        }
+    };
     std::fs::write(path, body).map_err(|e| e.to_string())
 }
 
@@ -301,8 +598,17 @@ fn wrap_line(line: &str, max_chars: usize) -> Vec<String> {
     out
 }
 
-fn save_pdf(text: &str, path: &str) -> Result<(), String> {
-    if text.chars().any(|c| c as u32 > 0xFF) {
+fn save_pdf(transcript: &Transcript, path: &str) -> Result<(), String> {
+    let body = match transcript {
+        Transcript::Plain { text } => text.clone(),
+        Transcript::Diarized { segments, .. } => segments
+            .iter()
+            .map(|s| format!("Hablante {}: {}", s.speaker, s.text))
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+    };
+
+    if body.chars().any(|c| c as u32 > 0xFF) {
         return Err(
             "El formato PDF solo soporta caracteres Latin-1. Usa DOCX, MD o TXT para este texto."
                 .to_string(),
@@ -324,7 +630,7 @@ fn save_pdf(text: &str, path: &str) -> Result<(), String> {
     let mut current_layer = doc.get_page(page1).get_layer(layer1);
     let mut y: f32 = top_margin;
 
-    for paragraph in text.split('\n') {
+    for paragraph in body.split('\n') {
         let lines = wrap_line(paragraph, max_chars);
         for line in lines {
             if y < bottom_margin {
@@ -345,12 +651,12 @@ fn save_pdf(text: &str, path: &str) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn save_transcript(text: String, path: String, format: String) -> Result<(), String> {
+fn save_transcript(transcript: Transcript, path: String, format: String) -> Result<(), String> {
     match format.as_str() {
-        "docx" => save_docx(&text, &path),
-        "txt" => save_txt(&text, &path),
-        "md" => save_md(&text, &path),
-        "pdf" => save_pdf(&text, &path),
+        "docx" => save_docx(&transcript, &path),
+        "txt" => save_txt(&transcript, &path),
+        "md" => save_md(&transcript, &path),
+        "pdf" => save_pdf(&transcript, &path),
         other => Err(format!("Formato no soportado: {other}")),
     }
 }

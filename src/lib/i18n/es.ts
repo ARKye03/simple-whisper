@@ -3,18 +3,31 @@ export const t = {
 
   // Header / drawer
   settings: "Ajustes",
-  apiKey: "Groq API Key",
-  apiKeyLabel: "Clave API de Groq",
-  apiKeyPlaceholder: "gsk_xxxxxxxxxxxxxxxx",
+
+  // Provider
+  provider: "Proveedor",
+  providerGroq: "Groq",
+  providerGemini: "Gemini",
+
+  // API key (shared scaffold; provider-specific labels below)
+  apiKey: "API Key",
+  apiKeyLabel: "Clave API",
+  apiKeyLabelGroq: "Clave API de Groq",
+  apiKeyLabelGemini: "Clave API de Google AI Studio",
+  apiKeyPlaceholder: "",
+  apiKeyPlaceholderGroq: "gsk_xxxxxxxxxxxxxxxx",
+  apiKeyPlaceholderGemini: "AIzaxxxxxxxxxxxxxxxx",
   apiKeyHint: "Tu clave se almacena localmente y nunca sale de tu dispositivo.",
   apiKeySaved: "Clave guardada",
   apiKeySaving: "Guardando…",
-  apiKeyInvalid: "Formato no válido (debe empezar con gsk_)",
+  apiKeyInvalid: "Formato no válido",
+  apiKeyInvalidGroq: "Formato no válido (debe empezar con gsk_)",
+  apiKeyInvalidGemini: "Formato no válido (debe empezar con AIza)",
   apiKeyValid: "Formato válido",
   apiKeyBackendKeychain: "Almacenada en el Llavero del sistema",
   apiKeyBackendStore: "Almacenada en archivo local (Llavero no disponible)",
   apiKeyBackendNone: "Sin clave guardada",
-  apiKeyMissing: "Configura tu clave API de Groq en Ajustes antes de transcribir.",
+  apiKeyMissing: "Configura tu clave API en Ajustes antes de transcribir.",
   show: "Mostrar",
   hide: "Ocultar",
 
@@ -31,6 +44,8 @@ export const t = {
   languageAuto: "Auto-detectar",
   outputFormat: "Formato de salida",
   pdfUnavailableForLang: "PDF no disponible para japonés/chino (la fuente integrada no incluye esos glifos).",
+  diarize: "Diarización",
+  diarizeHint: "Separar e identificar hablantes (solo Gemini).",
 
   // Drop zone
   dropHero: "Arrastra tus videos aquí",
@@ -67,4 +82,5 @@ export const t = {
   // Footer
   brand: "Simple Whisper · 2026",
   poweredBy: "Groq · Whisper",
+  poweredByGemini: "Google · Gemini 3.1 Flash-Lite",
 };

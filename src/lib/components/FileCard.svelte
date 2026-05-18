@@ -112,7 +112,7 @@
   {/if}
 
   {#if expanded && file.status === "completed" && file.transcript}
-    <TranscriptPanel text={file.transcript} fileName={file.name} />
+    <TranscriptPanel transcript={file.transcript} fileName={file.name} />
   {/if}
 
   {#if expanded && file.status === "error" && file.error}

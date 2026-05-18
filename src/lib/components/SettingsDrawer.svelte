@@ -7,8 +7,13 @@
     apiKeyBackend,
     patchSettings,
     isValidGroqKey,
+    isValidGeminiKey,
+    activeApiKey,
+    activeModel,
     type AppSettings,
-    type Model,
+    type GroqModel,
+    type GeminiModel,
+    type Provider,
     type Language,
     type OutputFormat,
   } from "$lib/settings";
@@ -29,8 +34,19 @@
     $settingsStore.language === "ja" || $settingsStore.language === "zh",
   );
 
+  const isGemini = $derived($settingsStore.provider === "gemini");
+  const currentKey = $derived(activeApiKey($settingsStore));
   const apiKeyValid = $derived(
-    $settingsStore.apiKey.length === 0 || isValidGroqKey($settingsStore.apiKey),
+    currentKey.length === 0 ||
+      (isGemini ? isValidGeminiKey(currentKey) : isValidGroqKey(currentKey)),
+  );
+
+  const apiKeyLabel = $derived(isGemini ? t.apiKeyLabelGemini : t.apiKeyLabelGroq);
+  const apiKeyPlaceholder = $derived(
+    isGemini ? t.apiKeyPlaceholderGemini : t.apiKeyPlaceholderGroq,
+  );
+  const apiKeyInvalidMsg = $derived(
+    isGemini ? t.apiKeyInvalidGemini : t.apiKeyInvalidGroq,
   );
 
   async function patch(p: Partial<AppSettings>) {
@@ -47,12 +63,25 @@
   }
 
   function onApiKeyInput(value: string) {
-    settingsStore.update((s) => ({ ...s, apiKey: value }));
+    const providerAtInput = $settingsStore.provider;
+    settingsStore.update((s) =>
+      providerAtInput === "groq"
+        ? { ...s, groqApiKey: value }
+        : { ...s, geminiApiKey: value },
+    );
     if (apiKeyDebounceTimer) clearTimeout(apiKeyDebounceTimer);
     apiKeyDebounceTimer = setTimeout(async () => {
+      // If user switched providers during the debounce window, drop this save —
+      // the typed value belongs to the previously-selected provider and writing
+      // it to the new one would corrupt that key.
+      if ($settingsStore.provider !== providerAtInput) return;
       apiKeySaveState = "saving";
       try {
-        await patchSettings({ apiKey: value });
+        await patchSettings(
+          providerAtInput === "groq"
+            ? { groqApiKey: value }
+            : { geminiApiKey: value },
+        );
         apiKeySaveState = "saved";
         if (apiKeySaveTimer) clearTimeout(apiKeySaveTimer);
         apiKeySaveTimer = setTimeout(() => (apiKeySaveState = "idle"), 2000);
@@ -79,6 +108,11 @@
     { v: "system", l: t.themeSystem },
   ];
 
+  const providers: { v: Provider; l: string }[] = [
+    { v: "groq", l: t.providerGroq },
+    { v: "gemini", l: t.providerGemini },
+  ];
+
   const languages: { v: Language; l: string }[] = [
     { v: "auto", l: t.languageAuto },
     { v: "es", l: "Español" },
@@ -95,11 +129,13 @@
     { v: "txt", l: "TXT" },
     { v: "md", l: "MD" },
   ];
-  // SRT/VTT placeholders disabled
   const FORMAT_ROW_2: { v: OutputFormat; l: string; disabled?: boolean }[] = [
     { v: "docx", l: "DOCX" },
     { v: "pdf", l: "PDF" },
   ];
+
+  const GROQ_MODELS: GroqModel[] = ["whisper-large-v3-turbo", "whisper-large-v3"];
+  const GEMINI_MODELS: GeminiModel[] = ["gemini-3.1-flash-lite", "gemini-3-flash-preview"];
 </script>
 
 {#snippet segBtn(active: boolean, label: string, onClick: () => void, disabled = false)}
@@ -155,15 +191,37 @@
       </div>
 
       <div>
+        <div style="font-size:11px; font-weight:500; color:var(--text-3); text-transform:uppercase; letter-spacing:0.08em; margin-bottom:8px;">{t.provider}</div>
+        <div style="display:flex; gap:2px; background:var(--bg-3); border-radius:var(--r-md); padding:3px;">
+          {#each providers as opt (opt.v)}
+            {@render segBtn($settingsStore.provider === opt.v, opt.l, () => patch({ provider: opt.v }))}
+          {/each}
+        </div>
+      </div>
+
+      <div>
         <div style="font-size:11px; font-weight:500; color:var(--text-3); text-transform:uppercase; letter-spacing:0.08em; margin-bottom:8px;">{t.model}</div>
-        <select
-          value={$settingsStore.model}
-          onchange={(e) => patch({ model: (e.currentTarget as HTMLSelectElement).value as Model })}
-          style="width:100%; padding:9px 12px; border-radius:var(--r-md); background:var(--bg-3); border:1px solid var(--border-2); color:var(--text-1); font-family:var(--font); font-size:13px; outline:none;"
-        >
-          <option value="whisper-large-v3-turbo">whisper-large-v3-turbo</option>
-          <option value="whisper-large-v3">whisper-large-v3</option>
-        </select>
+        {#if isGemini}
+          <select
+            value={$settingsStore.geminiModel}
+            onchange={(e) => patch({ geminiModel: (e.currentTarget as HTMLSelectElement).value as GeminiModel })}
+            style="width:100%; padding:9px 12px; border-radius:var(--r-md); background:var(--bg-3); border:1px solid var(--border-2); color:var(--text-1); font-family:var(--font); font-size:13px; outline:none;"
+          >
+            {#each GEMINI_MODELS as m (m)}
+              <option value={m}>{m}</option>
+            {/each}
+          </select>
+        {:else}
+          <select
+            value={$settingsStore.groqModel}
+            onchange={(e) => patch({ groqModel: (e.currentTarget as HTMLSelectElement).value as GroqModel })}
+            style="width:100%; padding:9px 12px; border-radius:var(--r-md); background:var(--bg-3); border:1px solid var(--border-2); color:var(--text-1); font-family:var(--font); font-size:13px; outline:none;"
+          >
+            {#each GROQ_MODELS as m (m)}
+              <option value={m}>{m}</option>
+            {/each}
+          </select>
+        {/if}
       </div>
 
       <div>
@@ -178,6 +236,22 @@
           {/each}
         </select>
       </div>
+
+      {#if isGemini}
+        <div>
+          <div style="font-size:11px; font-weight:500; color:var(--text-3); text-transform:uppercase; letter-spacing:0.08em; margin-bottom:8px;">{t.diarize}</div>
+          <label style="display:flex; align-items:center; gap:10px; cursor:pointer; padding:9px 12px; border-radius:var(--r-md); background:var(--bg-3); border:1px solid var(--border-2);">
+            <input
+              type="checkbox"
+              checked={$settingsStore.diarize}
+              onchange={(e) => patch({ diarize: (e.currentTarget as HTMLInputElement).checked })}
+              style="width:16px; height:16px; accent-color:var(--accent);"
+            />
+            <span style="font-size:13px; color:var(--text-1);">{t.diarize}</span>
+          </label>
+          <p style="font-size:10px; color:var(--text-4); margin-top:6px; line-height:1.5;">{t.diarizeHint}</p>
+        </div>
+      {/if}
 
       <div>
         <div style="font-size:11px; font-weight:500; color:var(--text-3); text-transform:uppercase; letter-spacing:0.08em; margin-bottom:8px;">{t.outputFormat}</div>
@@ -201,13 +275,13 @@
       <div style="height:1px; background:var(--border-1); margin:2px 0;"></div>
 
       <div>
-        <div style="font-size:11px; font-weight:500; color:var(--text-3); text-transform:uppercase; letter-spacing:0.08em; margin-bottom:8px;">{t.apiKey}</div>
+        <div style="font-size:11px; font-weight:500; color:var(--text-3); text-transform:uppercase; letter-spacing:0.08em; margin-bottom:8px;">{apiKeyLabel}</div>
         <div style="position:relative;">
           <input
             type={showKey ? "text" : "password"}
-            value={$settingsStore.apiKey}
+            value={currentKey}
             oninput={(e) => onApiKeyInput((e.currentTarget as HTMLInputElement).value)}
-            placeholder={t.apiKeyPlaceholder}
+            placeholder={apiKeyPlaceholder}
             spellcheck="false"
             autocomplete="off"
             style="
@@ -246,9 +320,9 @@
             </span>
           {:else if apiKeySaveState === "error"}
             <span style="color: var(--error);">⚠ Error</span>
-          {:else if $settingsStore.apiKey && !apiKeyValid}
-            <span style="color: var(--error);">{t.apiKeyInvalid}</span>
-          {:else if $settingsStore.apiKey && apiKeyValid}
+          {:else if currentKey && !apiKeyValid}
+            <span style="color: var(--error);">{apiKeyInvalidMsg}</span>
+          {:else if currentKey && apiKeyValid}
             <span style="color: var(--success); display:inline-flex; align-items:center; gap:5px;">
               <Icon name="check" size={11} /> {t.apiKeyValid}
             </span>
@@ -274,8 +348,8 @@
         letter-spacing:0.03em;
       "
     >
-      <span>Groq API</span>
-      <span>{$settingsStore.model}</span>
+      <span>{isGemini ? "Google AI" : "Groq API"}</span>
+      <span>{activeModel($settingsStore)}</span>
     </div>
 </div>
 
