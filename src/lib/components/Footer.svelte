@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { t } from "$lib/i18n/es";
+  import { t } from "$lib/i18n/state.svelte";
   import { settingsStore, activeModel } from "$lib/settings";
 </script>
 

@@ -2,7 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
   import { getSettings, activeApiKey, activeModel } from "$lib/settings";
-  import { t } from "$lib/i18n/es";
+  import { t } from "$lib/i18n/state.svelte";
   import DropZone from "$lib/components/DropZone.svelte";
   import FileCard from "$lib/components/FileCard.svelte";
   import Icon from "$lib/components/Icons.svelte";

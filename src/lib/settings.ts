@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { load, type Store } from "@tauri-apps/plugin-store";
 import { writable, type Writable } from "svelte/store";
+import { applyUiLanguage, type UiLanguagePref } from "$lib/i18n/state.svelte";
 
 export type Provider = "groq" | "gemini";
 export type GroqModel = "whisper-large-v3-turbo" | "whisper-large-v3";
@@ -18,6 +19,7 @@ export type AppSettings = {
   geminiModel: GeminiModel;
   language: Language;
   diarize: boolean;
+  uiLanguage: UiLanguagePref;
 };
 
 const STORE_FILE = "settings.json";
@@ -27,6 +29,7 @@ const GROQ_MODEL_KEY = "groq_model";
 const GEMINI_MODEL_KEY = "gemini_model";
 const LANG_KEY = "language";
 const DIARIZE_KEY = "diarize";
+const UI_LANG_KEY = "ui_language";
 const MIGRATION_FLAG = "secrets_migrated_v2";
 
 const DEFAULTS: AppSettings = {
@@ -37,6 +40,7 @@ const DEFAULTS: AppSettings = {
   geminiModel: "gemini-3.1-flash-lite",
   language: "auto",
   diarize: true,
+  uiLanguage: "system",
 };
 
 let cachedStore: Store | null = null;
@@ -106,6 +110,8 @@ export async function getSettings(): Promise<AppSettings> {
       (await store.get<GeminiModel>(GEMINI_MODEL_KEY)) ?? DEFAULTS.geminiModel,
     language: (await store.get<Language>(LANG_KEY)) ?? DEFAULTS.language,
     diarize: (await store.get<boolean>(DIARIZE_KEY)) ?? DEFAULTS.diarize,
+    uiLanguage:
+      (await store.get<UiLanguagePref>(UI_LANG_KEY)) ?? DEFAULTS.uiLanguage,
   };
 }
 
@@ -118,6 +124,7 @@ async function updateSettings(patch: Partial<AppSettings>): Promise<void> {
   if (patch.geminiModel !== undefined) await store.set(GEMINI_MODEL_KEY, patch.geminiModel);
   if (patch.language !== undefined) await store.set(LANG_KEY, patch.language);
   if (patch.diarize !== undefined) await store.set(DIARIZE_KEY, patch.diarize);
+  if (patch.uiLanguage !== undefined) await store.set(UI_LANG_KEY, patch.uiLanguage);
 }
 
 async function migrateSecrets(): Promise<void> {
@@ -183,6 +190,7 @@ export async function initSettings(): Promise<void> {
   await migrateSecrets();
   const s = await getSettings();
   settingsStore.set(s);
+  await applyUiLanguage(s.uiLanguage);
   initialized = true;
 }
 
@@ -200,6 +208,9 @@ export async function patchSettings(p: Partial<AppSettings>): Promise<void> {
   if (p.provider !== undefined) {
     const key = await loadApiKey(p.provider);
     apiKeyBackend.set(key ? "encrypted" : "none");
+  }
+  if (p.uiLanguage !== undefined) {
+    await applyUiLanguage(p.uiLanguage);
   }
   await updateSettings(p);
 }
