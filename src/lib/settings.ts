@@ -122,37 +122,56 @@ async function updateSettings(patch: Partial<AppSettings>): Promise<void> {
 
 async function migrateSecrets(): Promise<void> {
   const store = await getStore();
-  if ((await store.get<boolean>(MIGRATION_FLAG)) === true) return;
 
-  // 1. Pull any legacy plaintext store entries into the encrypted store
-  //    before the Keychain attempt, so they're not lost if the user denies.
+  // Legacy plaintext entries: pull into encrypted store. Cheap to retry every
+  // launch (just store reads) — so we don't gate on MIGRATION_FLAG. Delete only
+  // after a successful re-encrypt; a failing secret_set must not destroy the
+  // user's only copy.
   const legacyGroq = await store.get<string>(API_KEY_LEGACY);
   if (typeof legacyGroq === "string" && legacyGroq.trim()) {
-    await saveApiKey("groq", legacyGroq).catch(() => {});
+    try {
+      await saveApiKey("groq", legacyGroq);
+      await store.delete(API_KEY_LEGACY);
+    } catch {
+      // leave legacy entry in place; retry next launch
+    }
+  } else if (legacyGroq !== undefined) {
+    await store.delete(API_KEY_LEGACY);
   }
-  if (legacyGroq !== undefined) await store.delete(API_KEY_LEGACY);
 
   for (const provider of ["groq", "gemini"] as const) {
     const fbKey = fallbackKeyFor(provider);
     const fallback = await store.get<string>(fbKey);
     if (typeof fallback === "string" && fallback.trim()) {
       const existing = await loadApiKey(provider);
-      if (!existing) await saveApiKey(provider, fallback).catch(() => {});
+      if (existing) {
+        await store.delete(fbKey);
+        continue;
+      }
+      try {
+        await saveApiKey(provider, fallback);
+        await store.delete(fbKey);
+      } catch {
+        // leave fallback entry in place; retry next launch
+      }
+    } else if (fallback !== undefined) {
+      await store.delete(fbKey);
     }
-    if (fallback !== undefined) await store.delete(fbKey);
   }
 
-  // 2. One-shot Keychain read. This is the final prompt the user will see.
-  //    Result ignored — flag is set unconditionally so we never re-prompt.
-  for (const provider of ["groq", "gemini"] as const) {
-    try {
-      await invoke<boolean>("secret_migrate_from_keychain", { provider });
-    } catch {
-      // ignore — user denied / Keychain unavailable / no entry
+  // Keychain pull is the only step the user can perceive (password prompt on
+  // macOS), so it gets gated by MIGRATION_FLAG and runs at most once. Flag is
+  // set unconditionally so a Deny doesn't re-prompt every launch.
+  if ((await store.get<boolean>(MIGRATION_FLAG)) !== true) {
+    for (const provider of ["groq", "gemini"] as const) {
+      try {
+        await invoke<boolean>("secret_migrate_from_keychain", { provider });
+      } catch {
+        // ignore — user denied / Keychain unavailable / no entry
+      }
     }
+    await store.set(MIGRATION_FLAG, true);
   }
-
-  await store.set(MIGRATION_FLAG, true);
 }
 
 export const settingsStore: Writable<AppSettings> = writable(DEFAULTS);
