@@ -1,1 +1,0 @@
-{"root":["./.svelte-kit/ambient.d.ts","./.svelte-kit/non-ambient.d.ts","./.svelte-kit/types/src/routes/$types.d.ts","./vite.config.js","./src/lib/drawer.ts","./src/lib/settings.ts","./src/lib/theme.ts","./src/lib/types.ts","./src/lib/i18n/es.ts","./src/routes/+layout.ts"],"errors":true,"version":"5.6.3"}

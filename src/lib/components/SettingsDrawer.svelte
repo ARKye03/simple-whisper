@@ -63,18 +63,22 @@
   }
 
   function onApiKeyInput(value: string) {
-    const provider = $settingsStore.provider;
+    const providerAtInput = $settingsStore.provider;
     settingsStore.update((s) =>
-      provider === "groq"
+      providerAtInput === "groq"
         ? { ...s, groqApiKey: value }
         : { ...s, geminiApiKey: value },
     );
     if (apiKeyDebounceTimer) clearTimeout(apiKeyDebounceTimer);
     apiKeyDebounceTimer = setTimeout(async () => {
+      // If user switched providers during the debounce window, drop this save —
+      // the typed value belongs to the previously-selected provider and writing
+      // it to the new one would corrupt that key.
+      if ($settingsStore.provider !== providerAtInput) return;
       apiKeySaveState = "saving";
       try {
         await patchSettings(
-          provider === "groq"
+          providerAtInput === "groq"
             ? { groqApiKey: value }
             : { geminiApiKey: value },
         );

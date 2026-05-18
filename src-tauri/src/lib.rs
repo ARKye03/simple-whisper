@@ -303,6 +303,22 @@ fn gemini_prompt(diarize: bool, language: &str) -> String {
     }
 }
 
+fn audio_mime_for(path: &str) -> &'static str {
+    match Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("wav") => "audio/wav",
+        Some("m4a") | Some("mp4") | Some("aac") => "audio/mp4",
+        Some("ogg") | Some("opus") => "audio/ogg",
+        Some("flac") => "audio/flac",
+        Some("aiff") | Some("aif") => "audio/aiff",
+        _ => "audio/mpeg",
+    }
+}
+
 async fn transcribe_one_gemini(
     audio_path: &str,
     api_key: &str,
@@ -312,13 +328,14 @@ async fn transcribe_one_gemini(
 ) -> Result<GeminiResult, String> {
     let bytes = std::fs::read(audio_path).map_err(|e| e.to_string())?;
     let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    let mime = audio_mime_for(audio_path);
 
     let prompt = gemini_prompt(diarize, language);
 
     let mut body = json!({
         "contents": [{
             "parts": [
-                { "inline_data": { "mime_type": "audio/mpeg", "data": b64 } },
+                { "inline_data": { "mime_type": mime, "data": b64 } },
                 { "text": prompt }
             ]
         }]
