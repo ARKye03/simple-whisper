@@ -1,6 +1,6 @@
 <script lang="ts">
   import { t } from "$lib/i18n/es";
-  import { settingsStore } from "$lib/settings";
+  import { settingsStore, activeModel } from "$lib/settings";
 </script>
 
 <footer
@@ -19,5 +19,5 @@
   "
 >
   <span>{t.brand}</span>
-  <span>Groq · {$settingsStore.model}</span>
+  <span>{$settingsStore.provider === "gemini" ? "Google" : "Groq"} · {activeModel($settingsStore)}</span>
 </footer>

@@ -1,12 +1,12 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
-  import { getSettings } from "$lib/settings";
+  import { getSettings, activeApiKey, activeModel } from "$lib/settings";
   import { t } from "$lib/i18n/es";
   import DropZone from "$lib/components/DropZone.svelte";
   import FileCard from "$lib/components/FileCard.svelte";
   import Icon from "$lib/components/Icons.svelte";
-  import { fileNameOf, type FileItem } from "$lib/types";
+  import { fileNameOf, type FileItem, type Transcript } from "$lib/types";
 
   let files = $state<FileItem[]>([]);
   let expandedId = $state<number | null>(null);
@@ -60,7 +60,7 @@
   async function startProcessing() {
     if (isProcessing) return;
     const s = await getSettings();
-    if (!s.apiKey) {
+    if (!activeApiKey(s)) {
       const queued = files.filter((f) => f.status === "queued");
       files = files.map((f) =>
         queued.find((q) => q.id === f.id)
@@ -87,16 +87,18 @@
 
       try {
         const file = files.find((f) => f.id === fid)!;
-        const text = await invoke<string>("transcribe_video", {
+        const transcript = await invoke<Transcript>("transcribe_video", {
           videoPath: file.path,
-          apiKey: s.apiKey,
-          model: s.model,
+          provider: s.provider,
+          apiKey: activeApiKey(s),
+          model: activeModel(s),
           language: s.language,
+          diarize: s.provider === "gemini" ? s.diarize : false,
         });
         clearInterval(ticker);
         files = files.map((f) =>
           f.id === fid
-            ? { ...f, status: "completed", progress: 100, transcript: text }
+            ? { ...f, status: "completed", progress: 100, transcript }
             : f,
         );
         expandedId = fid;

@@ -3,9 +3,13 @@
   import { save } from "@tauri-apps/plugin-dialog";
   import Icon from "./Icons.svelte";
   import { t } from "$lib/i18n/es";
+  import { transcriptToPlainText, type Transcript } from "$lib/types";
 
-  type Props = { text: string; fileName: string };
-  let { text, fileName }: Props = $props();
+  type Props = { transcript: Transcript; fileName: string };
+  let { transcript, fileName }: Props = $props();
+
+  const plainText = $derived(transcriptToPlainText(transcript));
+  const isDiarized = $derived(transcript.kind === "diarized");
 
   let copied = $state(false);
   let downloadError = $state<string | null>(null);
@@ -13,7 +17,7 @@
 
   async function handleCopy() {
     try {
-      await navigator.clipboard.writeText(text);
+      await navigator.clipboard.writeText(plainText);
       copied = true;
       setTimeout(() => (copied = false), 2000);
     } catch {}
@@ -36,7 +40,7 @@
     });
     if (!path) return;
     try {
-      await invoke("save_transcript", { text, path, format });
+      await invoke("save_transcript", { transcript, path, format });
       downloadError = null;
     } catch (e) {
       showDownloadError(String(e));
@@ -87,5 +91,16 @@
       max-height:180px; overflow-y:auto; padding-right:4px;
       white-space:pre-wrap;
     "
-  >{text}</div>
+  >
+    {#if isDiarized && transcript.kind === "diarized"}
+      {#each transcript.segments as seg, i (i)}
+        <div style="margin-bottom:8px;">
+          <span style="font-weight:600; color:var(--text-1);">Hablante {seg.speaker}:</span>
+          <span> {seg.text}</span>
+        </div>
+      {/each}
+    {:else}
+      {plainText}
+    {/if}
+  </div>
 </div>
