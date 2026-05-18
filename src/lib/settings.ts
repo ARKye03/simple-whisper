@@ -4,7 +4,7 @@ import { writable, type Writable } from "svelte/store";
 
 export type Provider = "groq" | "gemini";
 export type GroqModel = "whisper-large-v3-turbo" | "whisper-large-v3";
-export type GeminiModel = "gemini-3.1-flash-lite";
+export type GeminiModel = "gemini-3.1-flash-lite" | "gemini-3-flash-preview";
 export type Model = GroqModel | GeminiModel;
 export type Language =
   | "auto" | "es" | "en" | "fr" | "de" | "pt" | "it" | "ja" | "zh";

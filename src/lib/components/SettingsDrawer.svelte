@@ -135,7 +135,7 @@
   ];
 
   const GROQ_MODELS: GroqModel[] = ["whisper-large-v3-turbo", "whisper-large-v3"];
-  const GEMINI_MODELS: GeminiModel[] = ["gemini-3.1-flash-lite"];
+  const GEMINI_MODELS: GeminiModel[] = ["gemini-3.1-flash-lite", "gemini-3-flash-preview"];
 </script>
 
 {#snippet segBtn(active: boolean, label: string, onClick: () => void, disabled = false)}
