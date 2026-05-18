@@ -1,8 +1,9 @@
+mod secrets;
+
 use std::path::{Path, PathBuf};
 
 use base64::Engine;
 use docx_rs::{Docx, Paragraph, Run};
-use keyring::Entry;
 use printpdf::{BuiltinFont, Mm, PdfDocument};
 use reqwest::multipart;
 use serde::{Deserialize, Serialize};
@@ -14,10 +15,6 @@ const GROQ_SEGMENT_SECONDS: &str = "5400";
 // Gemini accepts 20MB inline; base64 inflates ~33%, so source chunk must be ≤ ~14MB.
 const GEMINI_CHUNK_BYTES: u64 = 14 * 1024 * 1024;
 const GEMINI_SEGMENT_SECONDS: &str = "1800";
-
-const KEYCHAIN_SERVICE: &str = "com.arkye03.simple-whisper";
-const KEYCHAIN_ACCOUNT_GROQ: &str = "groq_api_key";
-const KEYCHAIN_ACCOUNT_GEMINI: &str = "gemini_api_key";
 
 // macOS GUI apps launched from Finder inherit only a minimal PATH
 // (/usr/bin:/bin:/usr/sbin:/sbin), so Homebrew/MacPorts binaries are invisible
@@ -35,43 +32,6 @@ fn resolve_ffmpeg() -> String {
         }
     }
     "ffmpeg".to_string()
-}
-
-fn account_for(provider: &str) -> Result<&'static str, String> {
-    match provider {
-        "groq" => Ok(KEYCHAIN_ACCOUNT_GROQ),
-        "gemini" => Ok(KEYCHAIN_ACCOUNT_GEMINI),
-        other => Err(format!("Proveedor desconocido: {other}")),
-    }
-}
-
-fn api_key_entry(provider: &str) -> Result<Entry, String> {
-    let account = account_for(provider)?;
-    Entry::new(KEYCHAIN_SERVICE, account).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn keychain_get_api_key(provider: String) -> Result<String, String> {
-    let entry = api_key_entry(&provider)?;
-    match entry.get_password() {
-        Ok(s) => Ok(s),
-        Err(keyring::Error::NoEntry) => Ok(String::new()),
-        Err(e) => Err(e.to_string()),
-    }
-}
-
-#[tauri::command]
-fn keychain_set_api_key(provider: String, key: String) -> Result<(), String> {
-    let trimmed = key.trim();
-    let entry = api_key_entry(&provider)?;
-    if trimmed.is_empty() {
-        match entry.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(e) => Err(e.to_string()),
-        }
-    } else {
-        entry.set_password(trimmed).map_err(|e| e.to_string())
-    }
 }
 
 fn temp_dir() -> PathBuf {
@@ -681,8 +641,9 @@ pub fn run() {
             transcribe_audio,
             transcribe_video,
             save_transcript,
-            keychain_get_api_key,
-            keychain_set_api_key,
+            secrets::secret_get,
+            secrets::secret_set,
+            secrets::secret_migrate_from_keychain,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
