@@ -7,15 +7,21 @@ export type UiLanguagePref = "system" | Lang;
 
 const dicts: Record<Lang, Dict> = { es, en };
 
-const state = $state<{ lang: Lang }>({ lang: "en" });
+function detectBrowserLang(): Lang {
+  if (typeof navigator === "undefined") return "en";
+  return navigator.language?.toLowerCase().startsWith("es") ? "es" : "en";
+}
+
+const state = $state<{ lang: Lang }>({ lang: detectBrowserLang() });
 
 export async function resolveSystemLanguage(): Promise<Lang> {
   try {
     const l = await locale();
-    return l?.toLowerCase().startsWith("es") ? "es" : "en";
+    if (l) return l.toLowerCase().startsWith("es") ? "es" : "en";
   } catch {
-    return "en";
+    // fall through to browser
   }
+  return detectBrowserLang();
 }
 
 export async function applyUiLanguage(pref: UiLanguagePref): Promise<void> {
