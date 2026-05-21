@@ -68,6 +68,20 @@
     <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
     <circle cx="12" cy="12" r="3" />
   </svg>
+{:else if name === "chevron-left"}
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class={cls}>
+    <polyline points="15 18 9 12 15 6" />
+  </svg>
+{:else if name === "chevron-right"}
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class={cls}>
+    <polyline points="9 18 15 12 9 6" />
+  </svg>
+{:else if name === "history"}
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width={stroke} stroke-linecap="round" stroke-linejoin="round" class={cls}>
+    <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+    <polyline points="3 3 3 8 8 8" />
+    <polyline points="12 7 12 12 15 14" />
+  </svg>
 {:else if name === "eye-off"}
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width={stroke} stroke-linecap="round" stroke-linejoin="round" class={cls}>
     <path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94" />

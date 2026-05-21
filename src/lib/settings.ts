@@ -20,6 +20,7 @@ export type AppSettings = {
   language: Language;
   diarize: boolean;
   uiLanguage: UiLanguagePref;
+  historySidebarCollapsed: boolean;
 };
 
 const STORE_FILE = "settings.json";
@@ -30,6 +31,7 @@ const GEMINI_MODEL_KEY = "gemini_model";
 const LANG_KEY = "language";
 const DIARIZE_KEY = "diarize";
 const UI_LANG_KEY = "ui_language";
+const HISTORY_COLLAPSED_KEY = "history_sidebar_collapsed";
 const MIGRATION_FLAG = "secrets_migrated_v2";
 
 const DEFAULTS: AppSettings = {
@@ -41,6 +43,7 @@ const DEFAULTS: AppSettings = {
   language: "auto",
   diarize: true,
   uiLanguage: "system",
+  historySidebarCollapsed: false,
 };
 
 let cachedStore: Store | null = null;
@@ -112,6 +115,9 @@ export async function getSettings(): Promise<AppSettings> {
     diarize: (await store.get<boolean>(DIARIZE_KEY)) ?? DEFAULTS.diarize,
     uiLanguage:
       (await store.get<UiLanguagePref>(UI_LANG_KEY)) ?? DEFAULTS.uiLanguage,
+    historySidebarCollapsed:
+      (await store.get<boolean>(HISTORY_COLLAPSED_KEY)) ??
+      DEFAULTS.historySidebarCollapsed,
   };
 }
 
@@ -125,6 +131,8 @@ async function updateSettings(patch: Partial<AppSettings>): Promise<void> {
   if (patch.language !== undefined) await store.set(LANG_KEY, patch.language);
   if (patch.diarize !== undefined) await store.set(DIARIZE_KEY, patch.diarize);
   if (patch.uiLanguage !== undefined) await store.set(UI_LANG_KEY, patch.uiLanguage);
+  if (patch.historySidebarCollapsed !== undefined)
+    await store.set(HISTORY_COLLAPSED_KEY, patch.historySidebarCollapsed);
 }
 
 async function migrateSecrets(): Promise<void> {

@@ -18,6 +18,20 @@ export type FileItem = {
   index: number;
 };
 
+export type HistoryProvider = "groq" | "gemini";
+
+export type HistoryEntry = {
+  id: string;
+  createdAt: number;
+  filename: string;
+  sourcePath: string | null;
+  provider: HistoryProvider;
+  model: string;
+  language: string;
+  diarize: boolean;
+  transcript: Transcript;
+};
+
 export const MEDIA_EXT = [
   "mp4", "mov", "mkv", "webm", "avi", "m4v", "wmv", "flv",
   "mp3", "wav", "m4a", "flac", "ogg",

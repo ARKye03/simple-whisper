@@ -1,7 +1,12 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
-  import { onMount } from "svelte";
+  import { onDestroy } from "svelte";
   import { getSettings, activeApiKey, activeModel } from "$lib/settings";
+  import {
+    addHistoryEntry,
+    historySelectionStore,
+    historyStore,
+  } from "$lib/history";
   import { t } from "$lib/i18n/state.svelte";
   import DropZone from "$lib/components/DropZone.svelte";
   import FileCard from "$lib/components/FileCard.svelte";
@@ -13,6 +18,38 @@
   let isProcessing = $state(false);
   let nextId = 0;
 
+  let viewingHistoryId = $state<string | null>(null);
+  const unsubHistorySel = historySelectionStore.subscribe((id) => {
+    viewingHistoryId = id;
+    if (id) expandedId = null;
+  });
+  onDestroy(unsubHistorySel);
+
+  const historyEntry = $derived(
+    viewingHistoryId
+      ? $historyStore.find((e) => e.id === viewingHistoryId) ?? null
+      : null,
+  );
+  const historyFileItem = $derived<FileItem | null>(
+    historyEntry
+      ? {
+          id: -1,
+          name: historyEntry.filename,
+          path: historyEntry.sourcePath ?? "",
+          size: 0,
+          status: "completed",
+          progress: 100,
+          transcript: historyEntry.transcript,
+          error: null,
+          index: 0,
+        }
+      : null,
+  );
+
+  function clearHistoryView() {
+    historySelectionStore.set(null);
+  }
+
   const hasFiles = $derived(files.length > 0);
   const queuedCount = $derived(files.filter((f) => f.status === "queued").length);
   const allDone = $derived(hasFiles && files.every((f) => f.status === "completed"));
@@ -22,6 +59,7 @@
   }
 
   async function onFilesAdded(paths: string[]) {
+    if (viewingHistoryId) clearHistoryView();
     const existing = new Set(files.map((f) => f.path));
     const fresh = paths.filter((p) => !existing.has(p));
     if (!fresh.length) return;
@@ -102,6 +140,19 @@
             : f,
         );
         expandedId = fid;
+        try {
+          await addHistoryEntry({
+            filename: file.name,
+            sourcePath: file.path,
+            provider: s.provider,
+            model: activeModel(s),
+            language: s.language,
+            diarize: s.provider === "gemini" ? s.diarize : false,
+            transcript,
+          });
+        } catch (err) {
+          console.error("Failed to persist history entry:", err);
+        }
       } catch (e) {
         clearInterval(ticker);
         files = files.map((f) =>
@@ -117,7 +168,28 @@
 
 <main style="flex:1; overflow-y:auto; padding: 28px;">
   <div style="max-width: 660px; margin: 0 auto;">
-    {#if !hasFiles}
+    {#if historyFileItem}
+      <div style="display:flex; flex-direction:column; gap:14px;">
+        <div style="display:flex; align-items:center; justify-content:space-between;">
+          <button
+            class="btn-ghost"
+            onclick={clearHistoryView}
+            style="font-size:11px;"
+          >
+            <Icon name="chevron-left" size={12} /> {t.closeAria}
+          </button>
+          <span style="font-size:11px; color: var(--text-4); letter-spacing:0.08em; text-transform:uppercase;">
+            {t.historyTitle}
+          </span>
+        </div>
+        <FileCard
+          file={historyFileItem}
+          expanded={true}
+          onRemove={() => {}}
+          onToggle={() => {}}
+        />
+      </div>
+    {:else if !hasFiles}
       <div style="padding-top: 48px; padding-bottom: 32px;">
         <DropZone compact={false} busy={isProcessing} {onFilesAdded} />
       </div>

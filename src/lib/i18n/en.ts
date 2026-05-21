@@ -91,6 +91,20 @@ export const en: Dict = {
   poweredBy: "Groq · Whisper",
   poweredByGemini: "Google · Gemini 3.1 Flash-Lite",
 
+  // History
+  historyTitle: "History",
+  historyEmpty: "No transcriptions yet. Completed ones will appear here.",
+  historyDeleteEntry: "Delete",
+  historyClearAll: "Clear history",
+  historyClearConfirm: "Clear all history? This cannot be undone.",
+  historyCollapseAria: "Collapse history",
+  historyExpandAria: "Expand history",
+  historyEntryAria: (filename: string) => `View ${filename}`,
+  historyJustNow: "now",
+  historyMinutesAgo: (n: number) => `${n} min ago`,
+  historyHoursAgo: (n: number) => `${n} h ago`,
+  historyDaysAgo: (n: number) => `${n} d ago`,
+
   // Updates
   updates: "Updates",
   checkForUpdates: "Check for updates",
