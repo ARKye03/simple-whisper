@@ -65,7 +65,7 @@ mv "$CARGO_TMP" src-tauri/Cargo.toml
 
 (cd src-tauri && cargo update -p simple-whisper --quiet)
 
-git cliff --tag "$TAG" --output CHANGELOG.md
+git cliff --tag "$TAG" --unreleased --prepend CHANGELOG.md
 
 git add VERSION package.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json CHANGELOG.md
 
