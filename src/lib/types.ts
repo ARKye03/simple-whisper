@@ -6,6 +6,49 @@ export type Transcript =
   | { kind: "plain"; text: string }
   | { kind: "diarized"; segments: TranscriptSegment[]; text: string };
 
+export type TranscribeErrorKind =
+  | "AuthInvalid"
+  | "AuthForbidden"
+  | "RateLimited"
+  | "QuotaExceeded"
+  | "PayloadTooLarge"
+  | "BadRequest"
+  | "ModelUnavailable"
+  | "ServerBusy"
+  | "ServerError"
+  | "Network"
+  | "Timeout"
+  | "MalformedResponse"
+  | "FfmpegMissing"
+  | "FfmpegFailed"
+  | "ApiKeyMissing"
+  | "Unknown";
+
+export type TranscribeError = {
+  kind: TranscribeErrorKind;
+  provider: "groq" | "gemini" | null;
+  message: string;
+  retry_after_secs: number | null;
+  raw: string | null;
+};
+
+export function isTranscribeError(v: unknown): v is TranscribeError {
+  if (!v || typeof v !== "object") return false;
+  const o = v as Record<string, unknown>;
+  return typeof o.kind === "string" && typeof o.message === "string";
+}
+
+export function toTranscribeError(e: unknown): TranscribeError {
+  if (isTranscribeError(e)) return e;
+  return {
+    kind: "Unknown",
+    provider: null,
+    message: typeof e === "string" ? e : String(e),
+    retry_after_secs: null,
+    raw: typeof e === "string" ? e : null,
+  };
+}
+
 export type FileItem = {
   id: number;
   name: string;
@@ -14,7 +57,7 @@ export type FileItem = {
   status: FileStatus;
   progress: number;
   transcript: Transcript | null;
-  error: string | null;
+  error: TranscribeError | null;
   index: number;
 };
 

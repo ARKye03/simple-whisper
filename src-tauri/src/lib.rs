@@ -1,4 +1,5 @@
 mod secrets;
+mod transcribe_error;
 
 use std::path::{Path, PathBuf};
 
@@ -9,6 +10,10 @@ use reqwest::multipart;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::process::Command;
+
+use transcribe_error::{
+    classify_gemini, classify_groq, classify_reqwest, TranscribeError, TranscribeErrorKind,
+};
 
 const GROQ_CHUNK_BYTES: u64 = 24 * 1024 * 1024;
 const GROQ_SEGMENT_SECONDS: &str = "5400";
@@ -60,16 +65,15 @@ async fn check_ffmpeg() -> Result<String, String> {
     Ok(stdout.lines().next().unwrap_or("ffmpeg").to_string())
 }
 
-#[tauri::command]
-async fn extract_audio(video_path: String) -> Result<String, String> {
-    let dir = ensure_temp_dir()?;
+async fn extract_audio_inner(video_path: &str) -> Result<String, TranscribeError> {
+    let dir = ensure_temp_dir().map_err(TranscribeError::unknown)?;
     let audio_path = dir.join("audio.mp3");
     let audio_str = audio_path.to_string_lossy().to_string();
 
     let output = Command::new(resolve_ffmpeg())
         .args([
             "-i",
-            &video_path,
+            video_path,
             "-vn",
             "-ar",
             "16000",
@@ -82,12 +86,11 @@ async fn extract_audio(video_path: String) -> Result<String, String> {
         ])
         .output()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|_| TranscribeError::ffmpeg_missing())?;
 
     if !output.status.success() {
-        return Err(format!(
-            "FFmpeg falló: {}",
-            String::from_utf8_lossy(&output.stderr)
+        return Err(TranscribeError::ffmpeg_failed(
+            String::from_utf8_lossy(&output.stderr).into_owned(),
         ));
     }
 
@@ -98,18 +101,20 @@ async fn chunk_audio_with(
     audio_path: &str,
     max_bytes: u64,
     segment_seconds: &str,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, TranscribeError> {
     let size = std::fs::metadata(audio_path)
-        .map_err(|e| e.to_string())?
+        .map_err(|e| TranscribeError::unknown(e.to_string()))?
         .len();
 
     if size <= max_bytes {
         return Ok(vec![audio_path.to_string()]);
     }
 
-    let dir = ensure_temp_dir()?.join("chunks");
+    let dir = ensure_temp_dir()
+        .map_err(TranscribeError::unknown)?
+        .join("chunks");
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| TranscribeError::unknown(e.to_string()))?;
     let pattern = dir.join("chunk_%03d.mp3").to_string_lossy().to_string();
 
     let output = Command::new(resolve_ffmpeg())
@@ -127,17 +132,16 @@ async fn chunk_audio_with(
         ])
         .output()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|_| TranscribeError::ffmpeg_missing())?;
 
     if !output.status.success() {
-        return Err(format!(
-            "FFmpeg falló al fragmentar: {}",
-            String::from_utf8_lossy(&output.stderr)
+        return Err(TranscribeError::ffmpeg_failed(
+            String::from_utf8_lossy(&output.stderr).into_owned(),
         ));
     }
 
     let mut chunks: Vec<String> = std::fs::read_dir(&dir)
-        .map_err(|e| e.to_string())?
+        .map_err(|e| TranscribeError::unknown(e.to_string()))?
         .filter_map(|entry| entry.ok().map(|e| e.path().to_string_lossy().to_string()))
         .filter(|p| p.ends_with(".mp3"))
         .collect();
@@ -145,15 +149,13 @@ async fn chunk_audio_with(
     chunks.sort();
 
     if chunks.is_empty() {
-        return Err("No se generaron fragmentos".into());
+        return Err(TranscribeError::new(
+            TranscribeErrorKind::FfmpegFailed,
+            "No se generaron fragmentos",
+        ));
     }
 
     Ok(chunks)
-}
-
-#[tauri::command]
-async fn chunk_audio(audio_path: String) -> Result<Vec<String>, String> {
-    chunk_audio_with(&audio_path, GROQ_CHUNK_BYTES, GROQ_SEGMENT_SECONDS).await
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -184,12 +186,13 @@ async fn transcribe_one_groq(
     api_key: &str,
     model: &str,
     language: &str,
-) -> Result<String, String> {
-    let bytes = std::fs::read(audio_path).map_err(|e| e.to_string())?;
+) -> Result<String, TranscribeError> {
+    let bytes = std::fs::read(audio_path)
+        .map_err(|e| TranscribeError::unknown(e.to_string()).with_provider("groq"))?;
     let part = multipart::Part::bytes(bytes)
         .file_name("audio.mp3")
         .mime_str("audio/mpeg")
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| TranscribeError::unknown(e.to_string()).with_provider("groq"))?;
 
     let mut form = multipart::Form::new()
         .part("file", part)
@@ -207,15 +210,22 @@ async fn transcribe_one_groq(
         .multipart(form)
         .send()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| classify_reqwest(e, "groq"))?;
 
     if !res.status().is_success() {
         let status = res.status();
+        let retry_after = res
+            .headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
         let body = res.text().await.unwrap_or_default();
-        return Err(format!("Groq {status}: {body}"));
+        return Err(classify_groq(status, &body, retry_after.as_deref()));
     }
 
-    res.text().await.map_err(|e| e.to_string())
+    res.text()
+        .await
+        .map_err(|e| classify_reqwest(e, "groq"))
 }
 
 fn gemini_diarize_schema() -> Value {
@@ -285,8 +295,9 @@ async fn transcribe_one_gemini(
     model: &str,
     language: &str,
     diarize: bool,
-) -> Result<GeminiResult, String> {
-    let bytes = std::fs::read(audio_path).map_err(|e| e.to_string())?;
+) -> Result<GeminiResult, TranscribeError> {
+    let bytes = std::fs::read(audio_path)
+        .map_err(|e| TranscribeError::unknown(e.to_string()).with_provider("gemini"))?;
     let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
     let mime = audio_mime_for(audio_path);
 
@@ -320,28 +331,52 @@ async fn transcribe_one_gemini(
         .json(&body)
         .send()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| classify_reqwest(e, "gemini"))?;
 
     if !res.status().is_success() {
         let status = res.status();
         let body = res.text().await.unwrap_or_default();
-        return Err(format!("Gemini {status}: {body}"));
+        return Err(classify_gemini(status, &body));
     }
 
-    let resp: Value = res.json().await.map_err(|e| e.to_string())?;
+    let resp: Value = res.json().await.map_err(|e| {
+        TranscribeError::new(TranscribeErrorKind::MalformedResponse, e.to_string())
+            .with_provider("gemini")
+            .with_raw(e.to_string())
+    })?;
     let text = resp
         .pointer("/candidates/0/content/parts/0/text")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| format!("Gemini: respuesta sin texto ({resp})"))?
+        .ok_or_else(|| {
+            TranscribeError::new(
+                TranscribeErrorKind::MalformedResponse,
+                "Gemini: respuesta sin texto",
+            )
+            .with_provider("gemini")
+            .with_raw(resp.to_string())
+        })?
         .to_string();
 
     if diarize {
-        let parsed: Value = serde_json::from_str(&text)
-            .map_err(|e| format!("Gemini: JSON inválido en respuesta ({e}): {text}"))?;
+        let parsed: Value = serde_json::from_str(&text).map_err(|e| {
+            TranscribeError::new(
+                TranscribeErrorKind::MalformedResponse,
+                format!("Gemini: JSON inválido en respuesta ({e})"),
+            )
+            .with_provider("gemini")
+            .with_raw(text.clone())
+        })?;
         let segments: Vec<TranscriptSegment> = parsed
             .get("segments")
             .and_then(|s| s.as_array())
-            .ok_or_else(|| format!("Gemini: falta 'segments' en {parsed}"))?
+            .ok_or_else(|| {
+                TranscribeError::new(
+                    TranscribeErrorKind::MalformedResponse,
+                    "Gemini: falta 'segments' en la respuesta",
+                )
+                .with_provider("gemini")
+                .with_raw(parsed.to_string())
+            })?
             .iter()
             .filter_map(|item| {
                 let speaker = item.get("speaker")?.as_str()?.trim().to_string();
@@ -377,7 +412,7 @@ async fn transcribe_pipeline(
     model: &str,
     language: &str,
     diarize: bool,
-) -> Result<Transcript, String> {
+) -> Result<Transcript, TranscribeError> {
     match provider {
         "groq" => {
             let chunks =
@@ -436,7 +471,10 @@ async fn transcribe_pipeline(
                 Ok(Transcript::Plain { text: out })
             }
         }
-        other => Err(format!("Proveedor desconocido: {other}")),
+        other => Err(TranscribeError::new(
+            TranscribeErrorKind::BadRequest,
+            format!("Proveedor desconocido: {other}"),
+        )),
     }
 }
 
@@ -448,9 +486,9 @@ async fn transcribe_audio(
     model: Option<String>,
     language: Option<String>,
     diarize: Option<bool>,
-) -> Result<Transcript, String> {
+) -> Result<Transcript, TranscribeError> {
     if api_key.trim().is_empty() {
-        return Err(format!("Falta clave API de {provider}"));
+        return Err(TranscribeError::api_key_missing(provider));
     }
     let model = model
         .filter(|m| !m.is_empty())
@@ -468,9 +506,9 @@ async fn transcribe_video(
     model: Option<String>,
     language: Option<String>,
     diarize: Option<bool>,
-) -> Result<Transcript, String> {
+) -> Result<Transcript, TranscribeError> {
     if api_key.trim().is_empty() {
-        return Err(format!("Falta clave API de {provider}"));
+        return Err(TranscribeError::api_key_missing(provider));
     }
     let model = model
         .filter(|m| !m.is_empty())
@@ -478,7 +516,7 @@ async fn transcribe_video(
     let language = language.unwrap_or_else(|| "auto".to_string());
     let diarize = diarize.unwrap_or(false);
 
-    let audio = extract_audio(video_path).await?;
+    let audio = extract_audio_inner(&video_path).await?;
     transcribe_pipeline(audio, &provider, &api_key, &model, &language, diarize).await
 }
 
@@ -637,8 +675,6 @@ pub fn run() {
     builder
         .invoke_handler(tauri::generate_handler![
             check_ffmpeg,
-            extract_audio,
-            chunk_audio,
             transcribe_audio,
             transcribe_video,
             save_transcript,
