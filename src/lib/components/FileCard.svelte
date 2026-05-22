@@ -3,6 +3,7 @@
   import TranscriptPanel from "./TranscriptPanel.svelte";
   import ErrorPanel from "./ErrorPanel.svelte";
   import { t } from "$lib/i18n/state.svelte";
+  import type { Provider } from "$lib/settings";
   import { fmtSize, type FileItem } from "$lib/types";
 
   type Props = {
@@ -11,8 +12,8 @@
     onRemove: (id: number) => void;
     onToggle: (id: number) => void;
     onRetry?: (id: number) => void;
-    onRetryWith?: (id: number, provider: "groq" | "gemini") => void;
-    otherProvider?: "groq" | "gemini" | null;
+    onRetryWith?: (id: number, provider: Provider) => void;
+    otherProvider?: Provider | null;
   };
   let {
     file,

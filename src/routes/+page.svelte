@@ -3,6 +3,8 @@
   import { onDestroy } from "svelte";
   import {
     getSettings,
+    otherProviderWithKey,
+    settingsStore,
     type AppSettings,
     type Provider,
   } from "$lib/settings";
@@ -28,15 +30,12 @@
   let nextId = 0;
   let lastSettings = $state<AppSettings | null>(null);
 
-  const otherProvider = $derived.by<Provider | null>(() => {
-    if (!lastSettings) return null;
-    const other: Provider = lastSettings.provider === "groq" ? "gemini" : "groq";
-    const otherKey =
-      other === "groq" ? lastSettings.groqApiKey : lastSettings.geminiApiKey;
-    return otherKey ? other : null;
-  });
+  const unsubSettings = settingsStore.subscribe((s) => (lastSettings = s));
+  onDestroy(unsubSettings);
 
-  getSettings().then((s) => (lastSettings = s));
+  const otherProvider = $derived<Provider | null>(
+    lastSettings ? otherProviderWithKey(lastSettings) : null,
+  );
 
   let viewingHistoryId = $state<string | null>(null);
   const unsubHistorySel = historySelectionStore.subscribe((id) => {
@@ -131,7 +130,6 @@
 
   async function runFile(fid: number, override: Provider | null = null) {
     const s = await getSettings();
-    lastSettings = s;
     const provider = effectiveProvider(s, override);
     const apiKey = effectiveKey(s, override);
 
@@ -227,7 +225,7 @@
     isProcessing = false;
   }
 
-  async function retryFileWith(fid: number, provider: "groq" | "gemini") {
+  async function retryFileWith(fid: number, provider: Provider) {
     if (isProcessing) return;
     isProcessing = true;
     await runFile(fid, provider);

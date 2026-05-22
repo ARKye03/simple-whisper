@@ -1,13 +1,14 @@
 <script lang="ts">
   import Icon from "./Icons.svelte";
   import { t } from "$lib/i18n/state.svelte";
+  import type { Provider } from "$lib/settings";
   import type { TranscribeError, TranscribeErrorKind } from "$lib/types";
 
   type Props = {
     error: TranscribeError;
-    otherProvider?: "groq" | "gemini" | null;
+    otherProvider?: Provider | null;
     onRetry?: () => void;
-    onRetryWith?: (provider: "groq" | "gemini") => void;
+    onRetryWith?: (provider: Provider) => void;
   };
 
   let { error, otherProvider = null, onRetry, onRetryWith }: Props = $props();

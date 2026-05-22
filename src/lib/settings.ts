@@ -79,6 +79,12 @@ export function activeModel(s: AppSettings): Model {
   return s.provider === "groq" ? s.groqModel : s.geminiModel;
 }
 
+export function otherProviderWithKey(s: AppSettings): Provider | null {
+  const other: Provider = s.provider === "groq" ? "gemini" : "groq";
+  const key = other === "groq" ? s.groqApiKey : s.geminiApiKey;
+  return key ? other : null;
+}
+
 export function activeIsValidKey(s: AppSettings): boolean {
   const key = activeApiKey(s);
   if (!key) return false;

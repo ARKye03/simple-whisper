@@ -97,17 +97,43 @@ pub fn classify_reqwest(err: reqwest::Error, provider: &str) -> TranscribeError 
         .with_raw(msg)
 }
 
+const RAW_BODY_LIMIT: usize = 4096;
+
+fn truncate_at_char(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 fn raw_summary(status: StatusCode, body: &str) -> String {
-    let trimmed = if body.len() > 4096 {
-        format!("{}…", &body[..4096])
+    if body.len() > RAW_BODY_LIMIT {
+        format!("HTTP {}\n\n{}…", status, truncate_at_char(body, RAW_BODY_LIMIT))
     } else {
-        body.to_string()
-    };
-    format!("HTTP {}\n\n{}", status, trimmed)
+        format!("HTTP {}\n\n{}", status, body)
+    }
 }
 
 fn parse_retry_after(header: Option<&str>) -> Option<u64> {
     header.and_then(|h| h.trim().parse::<u64>().ok())
+}
+
+fn classify_by_status(status: StatusCode) -> TranscribeErrorKind {
+    match status.as_u16() {
+        401 => TranscribeErrorKind::AuthInvalid,
+        403 => TranscribeErrorKind::AuthForbidden,
+        404 => TranscribeErrorKind::ModelUnavailable,
+        413 => TranscribeErrorKind::PayloadTooLarge,
+        429 => TranscribeErrorKind::RateLimited,
+        400 | 422 => TranscribeErrorKind::BadRequest,
+        498 | 502 | 503 => TranscribeErrorKind::ServerBusy,
+        s if s >= 500 => TranscribeErrorKind::ServerError,
+        _ => TranscribeErrorKind::Unknown,
+    }
 }
 
 pub fn classify_groq(
@@ -115,23 +141,15 @@ pub fn classify_groq(
     body: &str,
     retry_after_header: Option<&str>,
 ) -> TranscribeError {
-    let body_low = body.to_lowercase();
-    let kind = match status.as_u16() {
-        401 => TranscribeErrorKind::AuthInvalid,
-        403 => TranscribeErrorKind::AuthForbidden,
-        404 => TranscribeErrorKind::ModelUnavailable,
-        413 => TranscribeErrorKind::PayloadTooLarge,
-        429 => {
-            if body_low.contains("quota") || body_low.contains("daily") {
-                TranscribeErrorKind::QuotaExceeded
-            } else {
-                TranscribeErrorKind::RateLimited
-            }
+    let kind = if status.as_u16() == 429 {
+        let sniff = truncate_at_char(body, RAW_BODY_LIMIT).to_lowercase();
+        if sniff.contains("quota") || sniff.contains("daily") {
+            TranscribeErrorKind::QuotaExceeded
+        } else {
+            TranscribeErrorKind::RateLimited
         }
-        400 | 422 => TranscribeErrorKind::BadRequest,
-        498 | 502 | 503 => TranscribeErrorKind::ServerBusy,
-        s if s >= 500 => TranscribeErrorKind::ServerError,
-        _ => TranscribeErrorKind::Unknown,
+    } else {
+        classify_by_status(status)
     };
 
     let mut err = TranscribeError::new(kind, format!("Groq HTTP {}", status.as_u16()))
@@ -196,17 +214,7 @@ pub fn classify_gemini(status: StatusCode, body: &str) -> TranscribeError {
         "UNAVAILABLE" => TranscribeErrorKind::ServerBusy,
         "INTERNAL" | "UNKNOWN" => TranscribeErrorKind::ServerError,
         "DEADLINE_EXCEEDED" => TranscribeErrorKind::Timeout,
-        _ => match status.as_u16() {
-            401 => TranscribeErrorKind::AuthInvalid,
-            403 => TranscribeErrorKind::AuthForbidden,
-            404 => TranscribeErrorKind::ModelUnavailable,
-            413 => TranscribeErrorKind::PayloadTooLarge,
-            429 => TranscribeErrorKind::RateLimited,
-            400 | 422 => TranscribeErrorKind::BadRequest,
-            498 | 502 | 503 => TranscribeErrorKind::ServerBusy,
-            s if s >= 500 => TranscribeErrorKind::ServerError,
-            _ => TranscribeErrorKind::Unknown,
-        },
+        _ => classify_by_status(status),
     };
 
     let mut err = TranscribeError::new(kind, format!("Gemini HTTP {}", status.as_u16()))
