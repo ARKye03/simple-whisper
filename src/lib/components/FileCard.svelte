@@ -1,7 +1,9 @@
 <script lang="ts">
   import Icon from "./Icons.svelte";
   import TranscriptPanel from "./TranscriptPanel.svelte";
+  import ErrorPanel from "./ErrorPanel.svelte";
   import { t } from "$lib/i18n/state.svelte";
+  import type { Provider } from "$lib/settings";
   import { fmtSize, type FileItem } from "$lib/types";
 
   type Props = {
@@ -9,8 +11,19 @@
     expanded: boolean;
     onRemove: (id: number) => void;
     onToggle: (id: number) => void;
+    onRetry?: (id: number) => void;
+    onRetryWith?: (id: number, provider: Provider) => void;
+    otherProvider?: Provider | null;
   };
-  let { file, expanded, onRemove, onToggle }: Props = $props();
+  let {
+    file,
+    expanded,
+    onRemove,
+    onToggle,
+    onRetry,
+    onRetryWith,
+    otherProvider = null,
+  }: Props = $props();
 
   const STATUS = $derived({
     queued: { bg: "var(--bg-4)", color: "var(--text-3)", label: t.statusQueued },
@@ -116,16 +129,11 @@
   {/if}
 
   {#if expanded && file.status === "error" && file.error}
-    <div
-      style="
-        padding:10px 14px 14px;
-        border-top:1px solid var(--border-1);
-        background: var(--bg-2);
-        font-size:12px;
-        color: var(--error);
-        white-space: pre-wrap;
-        font-family: ui-monospace, monospace;
-      "
-    >{file.error}</div>
+    <ErrorPanel
+      error={file.error}
+      {otherProvider}
+      onRetry={onRetry ? () => onRetry(file.id) : undefined}
+      onRetryWith={onRetryWith ? (p) => onRetryWith(file.id, p) : undefined}
+    />
   {/if}
 </div>

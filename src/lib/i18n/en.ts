@@ -105,6 +105,65 @@ export const en: Dict = {
   historyHoursAgo: (n: number) => `${n} h ago`,
   historyDaysAgo: (n: number) => `${n} d ago`,
 
+  // Provider display names
+  providerName: (p: string) => (p === "groq" ? "Groq" : p === "gemini" ? "Gemini" : p),
+
+  // Transcription errors — titles
+  errAuthInvalidTitle: "Invalid API key",
+  errAuthForbiddenTitle: "Access denied",
+  errRateLimitedTitle: "Rate limit reached",
+  errQuotaExceededTitle: "Quota exhausted",
+  errPayloadTooLargeTitle: "File too large",
+  errBadRequestTitle: "Invalid request",
+  errModelUnavailableTitle: "Model unavailable",
+  errServerBusyTitle: "Service busy",
+  errServerErrorTitle: "Server error",
+  errNetworkTitle: "No connection",
+  errTimeoutTitle: "Request timed out",
+  errMalformedTitle: "Unexpected response",
+  errFfmpegMissingTitle: "FFmpeg not found",
+  errFfmpegFailedTitle: "FFmpeg failed",
+  errApiKeyMissingTitle: "Missing API key",
+  errUnknownTitle: "Unknown error",
+
+  // Transcription errors — bodies
+  errAuthInvalidBody: (p: string) =>
+    `The configured key is not accepted by ${p}. Review it in Settings.`,
+  errAuthForbiddenBody: (p: string) =>
+    `Your key isn't allowed to use this model on ${p}.`,
+  errRateLimitedBody: (p: string, secs: number | null) =>
+    secs
+      ? `Too many requests to ${p}. Wait ~${secs}s and try again.`
+      : `Too many requests to ${p}. Wait a few seconds and try again.`,
+  errQuotaExceededBody: (p: string) =>
+    `You've exhausted your ${p} quota. Switch provider or wait for the next cycle.`,
+  errPayloadTooLargeBody: (p: string) =>
+    `An audio chunk exceeds the ${p} size limit.`,
+  errBadRequestBody: (p: string) =>
+    `${p} rejected the request. Check language and model in Settings.`,
+  errModelUnavailableBody: (p: string) =>
+    `The selected model no longer exists on ${p}. Pick another in Settings.`,
+  errServerBusyBody: (p: string) =>
+    `${p} is overloaded. Retry in a few minutes or switch provider.`,
+  errServerErrorBody: (p: string) =>
+    `${p} returned an error. Retry or switch provider.`,
+  errNetworkBody: (p: string) =>
+    `Could not reach ${p}. Check your internet connection.`,
+  errTimeoutBody: (p: string) => `${p} took too long to respond. Retry.`,
+  errMalformedBody: (p: string) =>
+    `${p} returned a response that couldn't be parsed.`,
+  errFfmpegMissingBody: "Install FFmpeg and restart the app.",
+  errFfmpegFailedBody:
+    "FFmpeg could not process the file. Check that the file isn't corrupted.",
+  errApiKeyMissingBody: (p: string) => `Configure a ${p} key in Settings.`,
+  errUnknownBody: "An unexpected error occurred.",
+
+  // Error actions
+  errRetry: "Retry",
+  errRetryWith: (p: string) => `Retry with ${p}`,
+  errShowDetails: "Technical details",
+  errHideDetails: "Hide details",
+
   // Updates
   updates: "Updates",
   checkForUpdates: "Check for updates",
