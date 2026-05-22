@@ -1,3 +1,16 @@
+## [0.9.0] - 2026-05-22
+
+### 🚀 Features
+
+- Structured error handling with provider-aware classification
+
+### 🚜 Refactor
+
+- Consolidate provider and error classification logic
+
+### 📚 Documentation
+
+- Refresh CLAUDE.md for bilingual i18n and history sidebar
 ## [0.8.1] - 2026-05-22
 
 ### ⚙️ Miscellaneous Tasks
