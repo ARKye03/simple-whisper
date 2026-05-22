@@ -89,6 +89,20 @@ export const es = {
   poweredBy: "Groq · Whisper",
   poweredByGemini: "Google · Gemini 3.1 Flash-Lite",
 
+  // History
+  historyTitle: "Historial",
+  historyEmpty: "Aún no hay transcripciones. Las que completes aparecerán aquí.",
+  historyDeleteEntry: "Eliminar",
+  historyClearAll: "Borrar historial",
+  historyClearConfirm: "¿Borrar todo el historial? Esta acción no se puede deshacer.",
+  historyCollapseAria: "Contraer historial",
+  historyExpandAria: "Expandir historial",
+  historyEntryAria: (filename: string) => `Ver ${filename}`,
+  historyJustNow: "ahora",
+  historyMinutesAgo: (n: number) => `hace ${n} min`,
+  historyHoursAgo: (n: number) => `hace ${n} h`,
+  historyDaysAgo: (n: number) => `hace ${n} d`,
+
   // Updates
   updates: "Actualizaciones",
   checkForUpdates: "Buscar actualizaciones",

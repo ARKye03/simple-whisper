@@ -3,12 +3,14 @@
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { loadTheme } from "$lib/theme";
-  import { initSettings } from "$lib/settings";
+  import { initSettings, settingsStore, patchSettings } from "$lib/settings";
+  import { initHistory } from "$lib/history";
   import { checkForUpdates } from "$lib/updater";
   import { t } from "$lib/i18n/state.svelte";
   import Header from "$lib/components/Header.svelte";
   import Footer from "$lib/components/Footer.svelte";
   import SettingsDrawer from "$lib/components/SettingsDrawer.svelte";
+  import HistorySidebar from "$lib/components/HistorySidebar.svelte";
 
   let { children } = $props();
 
@@ -17,6 +19,7 @@
   onMount(async () => {
     await loadTheme();
     await initSettings();
+    await initHistory();
     try {
       await invoke<string>("check_ffmpeg");
       ffmpegStatus = "ok";
@@ -27,6 +30,12 @@
       console.error("Silent update check failed:", err),
     );
   });
+
+  async function toggleSidebar() {
+    await patchSettings({
+      historySidebarCollapsed: !$settingsStore.historySidebarCollapsed,
+    });
+  }
 </script>
 
 <div style="display:flex; flex-direction:column; height:100vh; background: var(--bg-0);">
@@ -55,7 +64,15 @@
     </div>
   {/if}
 
-  {@render children()}
+  <div style="flex:1; display:flex; min-height:0;">
+    <HistorySidebar
+      collapsed={$settingsStore.historySidebarCollapsed}
+      onToggle={toggleSidebar}
+    />
+    <div style="flex:1; min-width:0; display:flex; flex-direction:column;">
+      {@render children()}
+    </div>
+  </div>
 
   <Footer />
 </div>
