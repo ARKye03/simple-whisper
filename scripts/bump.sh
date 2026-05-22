@@ -1,26 +1,17 @@
 #!/usr/bin/env bash
 # Bump app version across VERSION, package.json, src-tauri/Cargo.toml,
-# refresh Cargo.lock, commit, and create a signed tag. Push is left to you.
+# refresh Cargo.lock, regenerate CHANGELOG.md, commit, and create a signed tag.
+# Push is left to you.
 #
-# Usage: scripts/bump.sh <version>
-#   Accepts 0.3.1 or v0.3.1 (v-prefix optional).
+# Usage: scripts/bump.sh
+#   Version is inferred from unreleased conventional commits via `git cliff --bumped-version`.
 
 set -euo pipefail
 
-if [[ $# -ne 1 ]]; then
-  echo "Usage: scripts/bump.sh <version>  (e.g. 0.3.1 or v0.3.1)" >&2
-  exit 64
+if ! command -v git-cliff >/dev/null 2>&1; then
+  echo "error: git-cliff not found. Install with: brew install git-cliff" >&2
+  exit 1
 fi
-
-INPUT="$1"
-
-if [[ ! "$INPUT" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "error: '$INPUT' is not a valid semver (expected X.Y.Z or vX.Y.Z)" >&2
-  exit 65
-fi
-
-RAW="${INPUT#v}"
-TAG="v${RAW}"
 
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
@@ -34,6 +25,21 @@ fi
 if [[ -n "$(git status --porcelain)" ]]; then
   echo "error: working tree is not clean. Commit or stash first." >&2
   git status --short >&2
+  exit 1
+fi
+
+CURRENT="$(cat VERSION)"
+TAG="$(git cliff --bumped-version)"
+
+if [[ -z "$TAG" || ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "error: git-cliff did not return a valid version (got: '$TAG')" >&2
+  exit 1
+fi
+
+RAW="${TAG#v}"
+
+if [[ "$RAW" == "$CURRENT" ]]; then
+  echo "error: no unreleased conventional commits since v$CURRENT — nothing to bump" >&2
   exit 1
 fi
 
@@ -59,7 +65,9 @@ mv "$CARGO_TMP" src-tauri/Cargo.toml
 
 (cd src-tauri && cargo update -p simple-whisper --quiet)
 
-git add VERSION package.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
+git cliff --tag "$TAG" --unreleased --prepend CHANGELOG.md
+
+git add VERSION package.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json CHANGELOG.md
 
 git commit -m "chore: release $TAG"
 

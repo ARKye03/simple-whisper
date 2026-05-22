@@ -43,6 +43,13 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - name: Generate release notes
+        id: changelog
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --latest --strip all
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -51,7 +58,11 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'Simple Whisper ${{ github.ref_name }}'
-          releaseBody: 'See assets to download. macOS builds are unsigned, right-click the .app and choose Open on first launch.'
+          releaseBody: |
+            ${{ steps.changelog.outputs.content }}
+
+            ---
+            See assets to download. macOS builds are unsigned, right-click the .app and choose Open on first launch.
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
