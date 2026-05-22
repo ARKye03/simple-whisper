@@ -1,3 +1,9 @@
+## [0.8.1] - 2026-05-22
+
+### ⚙️ Miscellaneous Tasks
+
+- Automate changelog generation with git-cliff
+- Clean up cliff config and improve changelog generation
 ## [0.8.0] - 2026-05-22
 
 ### 🚀 Features
