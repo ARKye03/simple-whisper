@@ -22,8 +22,10 @@ let initialized = false;
 export async function initHistory(): Promise<void> {
   if (initialized) return;
   const store = await getStore();
-  const entries = (await store.get<HistoryEntry[]>(ENTRIES_KEY)) ?? [];
-  historyStore.set(entries);
+  const raw = (await store.get<HistoryEntry[]>(ENTRIES_KEY)) ?? [];
+  // Entries written before URL support have no sourceUrl. Normalize on read so the
+  // type stays honest — history.json has no schema version (known gap).
+  historyStore.set(raw.map((e) => ({ ...e, sourceUrl: e.sourceUrl ?? null })));
   initialized = true;
 }
 

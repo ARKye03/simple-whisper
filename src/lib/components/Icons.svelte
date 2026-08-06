@@ -88,4 +88,10 @@
     <path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19" />
     <line x1="1" y1="1" x2="23" y2="23" />
   </svg>
+{:else if name === "link"}
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width={stroke} stroke-linecap="round" stroke-linejoin="round" class={cls}>
+    <path d="M9 17H7A5 5 0 017 7h2" />
+    <path d="M15 7h2a5 5 0 010 10h-2" />
+    <line x1="8" y1="12" x2="16" y2="12" />
+  </svg>
 {/if}

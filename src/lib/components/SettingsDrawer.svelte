@@ -13,11 +13,15 @@
     type AppSettings,
     type GroqModel,
     type GeminiModel,
+    COOKIE_BROWSERS,
+    COOKIE_BROWSER_LABELS,
+    type CookieBrowser,
     type Provider,
     type Language,
   } from "$lib/settings";
   import { t, type UiLanguagePref } from "$lib/i18n/state.svelte";
   import { checkForUpdates } from "$lib/updater";
+  import { ytdlpStore, refreshYtdlp } from "$lib/ytdlp";
   import Icon from "./Icons.svelte";
 
   let theme = $state<Theme>("system");
@@ -26,6 +30,15 @@
   let apiKeySaveState = $state<"idle" | "saving" | "saved" | "error">("idle");
   let apiKeySaveTimer: ReturnType<typeof setTimeout> | null = null;
   let apiKeyDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // yt-dlp is optional, so it is probed the first time the drawer is opened rather
+  // than at boot. Plain let, not $state, so the effect cannot re-trigger itself.
+  let ytdlpProbed = false;
+  $effect(() => {
+    if (!$settingsOpen || ytdlpProbed) return;
+    ytdlpProbed = true;
+    void refreshYtdlp();
+  });
 
   onMount(async () => {
     theme = await loadTheme();
@@ -319,6 +332,61 @@
           {:else}
             {t.apiKeyHint}
           {/if}
+        </p>
+      </div>
+
+      <div style="height:1px; background:var(--border-1); margin:2px 0;"></div>
+
+      <div>
+        <div style="font-size:11px; font-weight:500; color:var(--text-3); text-transform:uppercase; letter-spacing:0.08em; margin-bottom:8px;">{t.downloads}</div>
+        <div
+          style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:9px 12px; border-radius:var(--r-md); background:var(--bg-3); border:1px solid var(--border-2);"
+        >
+          <span
+            style="font-size:12.5px; color:var(--text-1); display:inline-flex; align-items:center; gap:7px; min-width:0;"
+          >
+            {#if $ytdlpStore.state === "checking"}
+              <Icon name="spinner" size={13} /> {t.ytdlpChecking}
+            {:else if $ytdlpStore.state === "ok"}
+              <span style="color:var(--success); display:inline-flex;"><Icon name="check" size={13} /></span>
+              {t.ytdlpFound($ytdlpStore.version ?? "")}
+            {:else if $ytdlpStore.state === "missing"}
+              <span style="color:var(--error); display:inline-flex;"><Icon name="x" size={13} /></span>
+              {t.ytdlpNotFound}
+            {:else}
+              <span style="color:var(--text-4);">{t.ytdlpUnknown}</span>
+            {/if}
+          </span>
+          <button
+            class="btn-ghost"
+            style="font-size:11px; flex-shrink:0;"
+            onclick={() => refreshYtdlp()}
+            disabled={$ytdlpStore.state === "checking"}
+          >
+            {t.ytdlpRecheck}
+          </button>
+        </div>
+        <p style="font-size:10px; color:var(--text-4); margin-top:6px; line-height:1.5;">
+          {$ytdlpStore.state === "missing" ? t.ytdlpInstallHint : t.ytdlpOptional}
+        </p>
+      </div>
+
+      <div>
+        <div style="font-size:11px; font-weight:500; color:var(--text-3); text-transform:uppercase; letter-spacing:0.08em; margin-bottom:8px;">{t.cookiesBrowser}</div>
+        <select
+          value={$settingsStore.cookiesBrowser}
+          onchange={(e) =>
+            patch({ cookiesBrowser: (e.currentTarget as HTMLSelectElement).value as CookieBrowser })}
+          style="width:100%; padding:9px 12px; border-radius:var(--r-md); background:var(--bg-3); border:1px solid var(--border-2); color:var(--text-1); font-family:var(--font); font-size:13px; outline:none;"
+        >
+          {#each COOKIE_BROWSERS as b (b)}
+            <option value={b}>{b === "none" ? t.cookiesBrowserNone : COOKIE_BROWSER_LABELS[b]}</option>
+          {/each}
+        </select>
+        <p style="font-size:10px; color:var(--text-4); margin-top:6px; line-height:1.5;">
+          {t.cookiesBrowserHint}{$settingsStore.cookiesBrowser === "safari"
+            ? ` ${t.cookiesBrowserSafariHint}`
+            : ""}
         </p>
       </div>
 

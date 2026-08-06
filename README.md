@@ -12,13 +12,14 @@
 
 ## Overview
 
-Simple Whisper is a desktop app that turns local media files into clean text. Drop a queue of videos onto the window, pick a provider, model and language, hit transcribe. Each file streams through your chosen provider (Groq Whisper or Google Gemini), then exports to your chosen format. Everything stays on your machine except the audio sent to the provider for inference.
+Simple Whisper is a desktop app that turns media into clean text. Drop a queue of videos onto the window — or paste a link and let yt-dlp fetch the audio — then pick a provider, model and language and hit transcribe. Each item streams through your chosen provider (Groq Whisper or Google Gemini), then exports to your chosen format. Everything stays on your machine except the audio sent to the provider for inference.
 
 - **Two providers.** Groq Whisper (fast pure ASR) or Google Gemini (cheaper hourly, native speaker diarization).
 - **Speaker diarization.** Gemini path labels turns as `Hablante A/B/C…`, rendered as bold paragraph prefixes in DOCX/MD.
 - **Multi-file queue.** Sequential processing with per-file status, progress, and inline preview.
 - **Four output formats.** DOCX, Markdown, TXT, PDF (Latin-1 only).
 - **Auto-chunking.** Files larger than the provider's per-request cap are split with FFmpeg, then stitched back together (24 MB / 90 min for Groq, 14 MB / 30 min for Gemini to fit base64-inlined audio under the 20 MB request cap).
+- **Transcribe from a link.** Paste, type or drop a URL and yt-dlp downloads just the audio, with live download progress (percent, speed, ETA). Playlists expand into individual queue items after a confirmation. Optional `--cookies-from-browser` for videos that need a signed-in session.
 - **Native drag-and-drop.** OS-level paths via Tauri's webview event, not browser-only.
 - **Settings drawer.** Theme, provider, model, language, format, diarization, API key, all live.
 - **Per-provider key storage.** Separate macOS Keychain entries for each provider (`groq_api_key`, `gemini_api_key`), encrypted plugin-store fallback for unsigned dev builds.
@@ -43,10 +44,19 @@ Simple Whisper is a desktop app that turns local media files into clean text. Dr
 | pnpm          | Package manager                         | `npm i -g pnpm`                      |
 | Rust stable   | Tauri backend                           | <https://rustup.rs>                  |
 | FFmpeg        | Audio extraction + chunking             | `brew install ffmpeg` (macOS)        |
+| yt-dlp        | *Optional* — transcribing links         | `brew install yt-dlp` (macOS)        |
 | Groq API key  | Whisper inference (`gsk_*` format)      | <https://console.groq.com/keys>      |
 | Gemini API key| Gemini inference (`AIza*` format)       | <https://aistudio.google.com/apikey> |
 
 At least one provider key is required. You can configure both and switch between them in Ajustes.
+
+yt-dlp is only needed to transcribe links — local files work without it, and there is no startup nag if it is absent. Ajustes › Descargas shows the detected version. It is probed in `/opt/homebrew/bin`, `/usr/local/bin`, `/opt/local/bin`, `/usr/bin` and `~/.local/bin` (for `pipx install yt-dlp`) before falling back to `PATH`.
+
+### Browser cookies
+
+Some videos require a signed-in session (private, members-only, age-gated). Ajustes › Descargas lets you pick one of `brave, chrome, chromium, edge, firefox, opera, safari, vivaldi, whale`, which is passed to yt-dlp as `--cookies-from-browser`. Cookies are read locally by yt-dlp and never leave your machine.
+
+macOS caveats: Safari requires granting the app **Full Disk Access**, and Chromium-family browsers trigger a Keychain prompt the first time cookies are decrypted. Both cases surface as a specific error on the card rather than a generic failure.
 
 ## Run
 
@@ -103,6 +113,13 @@ Open the gear icon (top-right), pick a provider, and paste the matching API key.
 ## How it works
 
 ```
+URL only:
+link         ->  yt-dlp -J --skip-download        ->  title, duration, uploader,
+                 (is it live? a playlist?)            entries[] for playlists
+link         ->  yt-dlp -f 'bestaudio*/best'      ->  downloads/<job>/source.<ext>
+                 (progress streamed to the UI over a tauri Channel)
+
+Both paths:
 video/audio  ->  ffmpeg -ar 16000 -ac 1 -b:a 32k                   ->  audio.mp3
 
 Groq path:
@@ -123,7 +140,12 @@ output[]     ->  diarize on:  Vec<TranscriptSegment{speaker,text}> -> Transcript
 Transcript   ->  user picks export format (TXT / MD / DOCX / PDF)
 ```
 
-All FFmpeg calls go through `tokio::process::Command` directly. No `tauri-plugin-shell` dependency. The 14 MB Gemini chunk cap is the source-file threshold; after base64 inflation (~33 %) it fits inside Gemini's 20 MB inline-request cap.
+All FFmpeg and yt-dlp calls go through `tokio::process::Command` directly. No `tauri-plugin-shell` dependency. The 14 MB Gemini chunk cap is the source-file threshold; after base64 inflation (~33 %) it fits inside Gemini's 20 MB inline-request cap.
+
+Downloads land in a per-job temp directory that is deleted whether the transcription succeeds or fails; a stale-directory sweep reclaims anything a hard quit left behind, and the yt-dlp child is killed if the app exits mid-download. Live streams are rejected before any download starts.
+
+> [!NOTE]
+> There is no cancel button yet. The download is the shortest phase — the provider HTTP calls dominate wall-clock time and are not cancellable today — so a Cancel that stopped working the moment "Descargando" became "Procesando" would be worse than none. Cancellation will land as one change covering both phases.
 
 > [!NOTE]
 > Gemini does not see prior chunks when transcribing. Speaker labels (`A`, `B`, …) restart at the beginning of each chunk, so a long file split across multiple requests can have label drift between chunks. v1 ships with this limitation.

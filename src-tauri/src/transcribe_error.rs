@@ -17,6 +17,11 @@ pub enum TranscribeErrorKind {
     MalformedResponse,
     FfmpegMissing,
     FfmpegFailed,
+    YtdlpMissing,
+    DownloadFailed,
+    UnsupportedUrl,
+    DownloadAuthRequired,
+    LiveUnsupported,
     ApiKeyMissing,
     Unknown,
 }
@@ -72,6 +77,13 @@ impl TranscribeError {
         Self::new(TranscribeErrorKind::FfmpegFailed, "FFmpeg falló").with_raw(raw)
     }
 
+    pub fn ytdlp_missing() -> Self {
+        Self::new(
+            TranscribeErrorKind::YtdlpMissing,
+            "yt-dlp no encontrado en el sistema",
+        )
+    }
+
     pub fn api_key_missing(provider: impl Into<String>) -> Self {
         Self::new(TranscribeErrorKind::ApiKeyMissing, "Falta clave API").with_provider(provider)
     }
@@ -116,6 +128,27 @@ fn raw_summary(status: StatusCode, body: &str) -> String {
     } else {
         format!("HTTP {}\n\n{}", status, body)
     }
+}
+
+// yt-dlp runs with `--print`, which implies `--quiet` and pushes routine extractor
+// chatter ("[youtube] abc: Downloading webpage") onto stderr. Keep only the
+// diagnostic lines so `raw` stays readable and substring matching in
+// classify_ytdlp cannot trip over progress noise.
+fn ytdlp_stderr_summary(stderr: &str) -> String {
+    let picked = stderr
+        .lines()
+        .filter(|l| {
+            let t = l.trim_start();
+            t.starts_with("ERROR:") || t.starts_with("WARNING:") || t.starts_with("yt-dlp: error:")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let text = if picked.is_empty() {
+        stderr.trim()
+    } else {
+        picked.as_str()
+    };
+    truncate_at_char(text, RAW_BODY_LIMIT).to_string()
 }
 
 fn parse_retry_after(header: Option<&str>) -> Option<u64> {
@@ -225,4 +258,151 @@ pub fn classify_gemini(status: StatusCode, body: &str) -> TranscribeError {
         err = err.with_retry_after(secs);
     }
     err
+}
+
+// Order is load-bearing: most specific needle first. Cookie-database failures come
+// before the generic "sign in" needle because a stale-cookie run emits both and the
+// cookie hint is the actionable one; 404 comes before the network bucket because
+// yt-dlp wraps it in "Unable to download webpage" even though it means dead link,
+// not lost connectivity.
+pub fn classify_ytdlp(stderr: &str) -> TranscribeError {
+    let raw = ytdlp_stderr_summary(stderr);
+    let low = raw.to_lowercase();
+    let has = |needle: &str| low.contains(needle);
+
+    // An old yt-dlp rejects flags download_audio_to depends on (--progress-delta
+    // needs 2024.07+, --color 2023.03+) and exits before downloading anything.
+    // check_ytdlp deliberately accepts any version, so this is where a too-old
+    // install gets named instead of surfacing as a bare "La descarga falló".
+    let (kind, message) = if has("no such option") || has("unrecognized arguments") {
+        (
+            TranscribeErrorKind::DownloadFailed,
+            "Tu versión de yt-dlp es demasiado antigua. Actualízala con `brew upgrade yt-dlp` o `pipx upgrade yt-dlp`",
+        )
+    } else if has("cookies database") || has("could not find local state file") {
+        (
+            TranscribeErrorKind::DownloadAuthRequired,
+            "No se encontró la base de cookies de ese navegador. Ábrelo al menos una vez o elige otro",
+        )
+    } else if has("unsupported browser specified for cookies") {
+        (
+            TranscribeErrorKind::BadRequest,
+            "Navegador no soportado para cookies",
+        )
+    } else if has("operation not permitted") || has("full disk access") {
+        (
+            TranscribeErrorKind::DownloadAuthRequired,
+            "macOS bloqueó el acceso a las cookies. Concede Acceso total al disco a la app en Ajustes › Privacidad y seguridad",
+        )
+    } else if has("failed to decrypt") || has("could not decrypt") || has("keyring") {
+        (
+            TranscribeErrorKind::DownloadAuthRequired,
+            "No se pudieron descifrar las cookies. Acepta el permiso del llavero de macOS e inténtalo de nuevo",
+        )
+    } else if has("members-only") || has("members only") || has("join this channel") {
+        (
+            TranscribeErrorKind::DownloadAuthRequired,
+            "Video exclusivo para miembros del canal",
+        )
+    } else if has("private video") {
+        (
+            TranscribeErrorKind::DownloadAuthRequired,
+            "Video privado. Usa las cookies del navegador donde tienes acceso",
+        )
+    } else if has("not a bot")
+        || has("sign in")
+        || has("login required")
+        || has("only available for registered users")
+    {
+        (
+            TranscribeErrorKind::DownloadAuthRequired,
+            "El sitio pide iniciar sesión. Elige en Ajustes el navegador donde ya estás conectado",
+        )
+    } else if has("is not a valid url") {
+        (
+            TranscribeErrorKind::UnsupportedUrl,
+            "El enlace no es una URL válida",
+        )
+    } else if has("unsupported url") {
+        (TranscribeErrorKind::UnsupportedUrl, "Enlace no soportado")
+    } else if has("http error 404") || has("http error 410") {
+        (
+            TranscribeErrorKind::UnsupportedUrl,
+            "El enlace no existe o fue eliminado",
+        )
+    } else if has("video unavailable")
+        || has("has been removed")
+        || has("has been terminated")
+        || has("no longer available")
+    {
+        (
+            TranscribeErrorKind::UnsupportedUrl,
+            "El video no está disponible",
+        )
+    } else if has("geo restriction")
+        || has("available in your country")
+        || has("available from your location")
+    {
+        (
+            TranscribeErrorKind::UnsupportedUrl,
+            "El video no está disponible en tu región",
+        )
+    } else if has("drm protected") {
+        (
+            TranscribeErrorKind::UnsupportedUrl,
+            "El video está protegido con DRM",
+        )
+    } else if has("requested format is not available")
+        || has("no video formats found")
+        || has("only images are available")
+    {
+        (
+            TranscribeErrorKind::UnsupportedUrl,
+            "Ese enlace no ofrece una pista de audio descargable",
+        )
+    } else if has("live event will begin") || has("premieres in") || has("is not yet available") {
+        (
+            TranscribeErrorKind::UnsupportedUrl,
+            "El video aún no está disponible (estreno o evento programado)",
+        )
+    } else if has("http error 429") || has("too many requests") {
+        (
+            TranscribeErrorKind::RateLimited,
+            "El sitio limitó las descargas. Espera unos minutos",
+        )
+    } else if has("http error 403") || has("forbidden") {
+        (
+            TranscribeErrorKind::AuthForbidden,
+            "El sitio rechazó la descarga (403)",
+        )
+    } else if has("timed out") || has("timeout") {
+        (TranscribeErrorKind::Timeout, "La descarga tardó demasiado")
+    } else if has("unable to download webpage")
+        || has("unable to download api page")
+        || has("connection reset")
+        || has("connection refused")
+        || has("nodename nor servname")
+        || has("failed to resolve")
+        || has("name or service not known")
+        || has("network is unreachable")
+    {
+        (
+            TranscribeErrorKind::Network,
+            "No se pudo conectar con el sitio",
+        )
+    } else if has("no space left on device") {
+        (
+            TranscribeErrorKind::DownloadFailed,
+            "No hay espacio en disco para la descarga",
+        )
+    } else if has("ffmpeg") {
+        (
+            TranscribeErrorKind::FfmpegFailed,
+            "FFmpeg falló al procesar la descarga",
+        )
+    } else {
+        (TranscribeErrorKind::DownloadFailed, "La descarga falló")
+    };
+
+    TranscribeError::new(kind, message).with_raw(raw)
 }
