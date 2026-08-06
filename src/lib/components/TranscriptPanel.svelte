@@ -3,7 +3,7 @@
   import { save } from "@tauri-apps/plugin-dialog";
   import Icon from "./Icons.svelte";
   import { t } from "$lib/i18n/state.svelte";
-  import { transcriptToPlainText, type Transcript } from "$lib/types";
+  import { safeFileName, transcriptToPlainText, type Transcript } from "$lib/types";
 
   type Props = { transcript: Transcript; fileName: string };
   let { transcript, fileName }: Props = $props();
@@ -24,7 +24,9 @@
   }
 
   function baseName(name: string): string {
-    return name.replace(/\.[^./\\]+$/, "");
+    // Only strip a plausible real extension: a yt-dlp title like "Ep. 3 — Título"
+    // must not get truncated to "Ep".
+    return name.replace(/\.[A-Za-z0-9]{1,5}$/, "");
   }
 
   function showDownloadError(msg: string) {
@@ -35,7 +37,7 @@
 
   async function downloadAs(format: "txt" | "md" | "docx" | "pdf") {
     const path = await save({
-      defaultPath: `${baseName(fileName)}.${format}`,
+      defaultPath: `${safeFileName(baseName(fileName))}.${format}`,
       filters: [{ name: format.toUpperCase(), extensions: [format] }],
     });
     if (!path) return;

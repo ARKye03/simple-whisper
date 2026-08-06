@@ -63,14 +63,41 @@ export const en: Dict = {
   dropHere: "Release to transcribe",
   unsupportedFormat: "Unsupported format",
 
+  // URL ingestion
+  orPasteLink: "or paste a link",
+  urlInputLabel: "Video link",
+  urlInputPlaceholder: "https://www.youtube.com/watch?v=…",
+  urlInputSubmit: "Add",
+  urlInputSubmitAria: "Add link to the queue",
+  urlInputHint: "Paste one or more links and press Enter. You can also paste anytime.",
+  urlInvalid: "Invalid link. Use an http or https address.",
+  urlResolving: "Fetching details…",
+  urlAddedOne: "Link added to the queue",
+  urlAddedCount: (n: number) => `${n} links added to the queue`,
+
+  // Playlist expansion
+  playlistConfirmTitle: "Playlist",
+  playlistConfirmBody: (shown: number, total: number) =>
+    shown < total
+      ? `This playlist has ${total} videos. The first ${shown} will be queued and transcribed one by one. Continue?`
+      : `This playlist has ${shown} videos. All of them will be queued and transcribed one by one. Continue?`,
+  playlistConfirmOk: "Add",
+  playlistCapNotice: (shown: number, total: number) =>
+    `Added ${shown} of ${total} videos`,
+  playlistExpanded: (n: number) => `${n} videos added to the queue`,
+
   // Queue
   statusQueued: "Queued",
+  statusDownloading: "Downloading",
   statusProcessing: "Processing",
   statusCompleted: "Completed",
   statusError: "Error",
   transcribeBtn: "Transcribe",
-  processing: "Processing files…",
+  processing: "Processing…",
   clearAll: "Clear all",
+  remove: "Remove",
+  downloadEta: (eta: string) => `${eta} left`,
+  downloadProgressAria: (pct: number) => `Downloading audio, ${pct} percent`,
 
   // Transcript panel
   copy: "Copy",
@@ -81,6 +108,23 @@ export const en: Dict = {
   // FFmpeg
   ffmpegMissing:
     "FFmpeg not detected on your system. Install it with `brew install ffmpeg` (macOS), `sudo apt install ffmpeg` (Debian/Ubuntu) or `winget install ffmpeg` (Windows).",
+
+  // Downloads (yt-dlp)
+  downloads: "Downloads",
+  ytdlpChecking: "Checking yt-dlp…",
+  ytdlpFound: (v: string) => `yt-dlp ${v} detected`,
+  ytdlpNotFound: "yt-dlp not found",
+  ytdlpUnknown: "yt-dlp not checked yet",
+  ytdlpRecheck: "Check",
+  ytdlpOptional: "Optional. Only needed to transcribe links.",
+  ytdlpInstallHint:
+    "Install it with `brew install yt-dlp` (macOS), `pipx install yt-dlp` (Linux) or `winget install yt-dlp` (Windows).",
+  cookiesBrowser: "Browser cookies",
+  cookiesBrowserNone: "Don't use cookies",
+  cookiesBrowserHint:
+    "Some videos require a signed-in session. yt-dlp can read cookies from the browser you pick; they never leave your device.",
+  cookiesBrowserSafariHint:
+    "On macOS, Safari requires granting the app Full Disk Access.",
 
   // Filters / save dialog
   videoFilters: "Media",
@@ -104,6 +148,8 @@ export const en: Dict = {
   historyMinutesAgo: (n: number) => `${n} min ago`,
   historyHoursAgo: (n: number) => `${n} h ago`,
   historyDaysAgo: (n: number) => `${n} d ago`,
+  historySourceUrlBadge: "Link",
+  historyOpenSource: "Open original link",
 
   // Provider display names
   providerName: (p: string) => (p === "groq" ? "Groq" : p === "gemini" ? "Gemini" : p),
@@ -123,6 +169,11 @@ export const en: Dict = {
   errMalformedTitle: "Unexpected response",
   errFfmpegMissingTitle: "FFmpeg not found",
   errFfmpegFailedTitle: "FFmpeg failed",
+  errYtdlpMissingTitle: "yt-dlp not found",
+  errDownloadFailedTitle: "Audio download failed",
+  errUnsupportedUrlTitle: "Unsupported link",
+  errDownloadAuthRequiredTitle: "Link requires sign-in",
+  errLiveUnsupportedTitle: "Live stream",
   errApiKeyMissingTitle: "Missing API key",
   errUnknownTitle: "Unknown error",
 
@@ -155,6 +206,16 @@ export const en: Dict = {
   errFfmpegMissingBody: "Install FFmpeg and restart the app.",
   errFfmpegFailedBody:
     "FFmpeg could not process the file. Check that the file isn't corrupted.",
+  errYtdlpMissingBody:
+    "Transcribing links needs yt-dlp. Install it with `brew install yt-dlp` (macOS), `pipx install yt-dlp` (Linux) or `winget install yt-dlp` (Windows).",
+  errDownloadFailedBody:
+    "yt-dlp could not download this link. The video may be private or removed, or yt-dlp may be out of date.",
+  errUnsupportedUrlBody:
+    "yt-dlp doesn't recognize this link. Try the direct video address.",
+  errDownloadAuthRequiredBody:
+    "This video requires a session or is age-restricted. Pick your browser in Settings › Downloads to use its cookies.",
+  errLiveUnsupportedBody:
+    "Live streams can't be transcribed. Wait for it to end and use the recording's link.",
   errApiKeyMissingBody: (p: string) => `Configure a ${p} key in Settings.`,
   errUnknownBody: "An unexpected error occurred.",
 
