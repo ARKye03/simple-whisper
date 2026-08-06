@@ -1,13 +1,18 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { onDestroy } from "svelte";
   import {
+    apiKeyFor,
     getSettings,
-    otherProviderWithKey,
+    modelFor,
+    providerNeedsKey,
+    retryProviders,
     settingsStore,
     type AppSettings,
     type Provider,
   } from "$lib/settings";
+  import { localReady, localStatusStore } from "$lib/local";
   import {
     addHistoryEntry,
     historySelectionStore,
@@ -21,6 +26,7 @@
     fileNameOf,
     toTranscribeError,
     type FileItem,
+    type LocalProgressEvent,
     type Transcript,
   } from "$lib/types";
 
@@ -33,8 +39,13 @@
   const unsubSettings = settingsStore.subscribe((s) => (lastSettings = s));
   onDestroy(unsubSettings);
 
-  const otherProvider = $derived<Provider | null>(
-    lastSettings ? otherProviderWithKey(lastSettings) : null,
+  const retryOptions = $derived<Provider[]>(
+    lastSettings
+      ? retryProviders(
+          lastSettings,
+          localReady($localStatusStore, lastSettings.localModel),
+        )
+      : [],
   );
 
   let viewingHistoryId = $state<string | null>(null);
@@ -119,13 +130,11 @@
   }
 
   function effectiveKey(s: AppSettings, override: Provider | null): string {
-    const p = effectiveProvider(s, override);
-    return p === "groq" ? s.groqApiKey : s.geminiApiKey;
+    return apiKeyFor(s, effectiveProvider(s, override));
   }
 
   function effectiveModel(s: AppSettings, override: Provider | null): string {
-    const p = effectiveProvider(s, override);
-    return p === "groq" ? s.groqModel : s.geminiModel;
+    return modelFor(s, effectiveProvider(s, override));
   }
 
   async function runFile(fid: number, override: Provider | null = null) {
@@ -133,7 +142,7 @@
     const provider = effectiveProvider(s, override);
     const apiKey = effectiveKey(s, override);
 
-    if (!apiKey) {
+    if (providerNeedsKey(provider) && !apiKey) {
       files = files.map((f) =>
         f.id === fid
           ? {
@@ -155,16 +164,38 @@
 
     files = files.map((f) =>
       f.id === fid
-        ? { ...f, status: "processing", progress: 5, error: null }
+        ? { ...f, status: "processing", progress: 5, error: null, stage: null, stageDetail: null }
         : f,
     );
 
-    // Indeterminate-ish animation while invoke runs (real progress would need event plumbing).
-    let progress = 5;
-    const ticker = setInterval(() => {
-      progress = Math.min(92, progress + Math.random() * 6);
-      files = files.map((f) => (f.id === fid ? { ...f, progress } : f));
-    }, 250);
+    const jobId = crypto.randomUUID();
+    let unlisten: UnlistenFn | null = null;
+    let ticker: ReturnType<typeof setInterval> | null = null;
+
+    if (provider === "local") {
+      // Registered before invoke: the model-load and download stages fire early
+      // and would otherwise be lost.
+      unlisten = await listen<LocalProgressEvent>("local:progress", (e) => {
+        if (e.payload.job_id !== jobId) return;
+        files = files.map((f) =>
+          f.id === fid
+            ? {
+                ...f,
+                stage: e.payload.stage,
+                stageDetail: e.payload.detail,
+                progress: e.payload.progress ?? f.progress,
+              }
+            : f,
+        );
+      });
+    } else {
+      // Indeterminate-ish animation: the cloud providers give no progress signal.
+      let progress = 5;
+      ticker = setInterval(() => {
+        progress = Math.min(92, progress + Math.random() * 6);
+        files = files.map((f) => (f.id === fid ? { ...f, progress } : f));
+      }, 250);
+    }
 
     try {
       const file = files.find((f) => f.id === fid)!;
@@ -176,11 +207,19 @@
         model,
         language: s.language,
         diarize: provider === "gemini" ? s.diarize : false,
+        jobId,
       });
-      clearInterval(ticker);
       files = files.map((f) =>
         f.id === fid
-          ? { ...f, status: "completed", progress: 100, transcript, error: null }
+          ? {
+              ...f,
+              status: "completed",
+              progress: 100,
+              transcript,
+              error: null,
+              stage: null,
+              stageDetail: null,
+            }
           : f,
       );
       expandedId = fid;
@@ -198,13 +237,21 @@
         console.error("Failed to persist history entry:", err);
       }
     } catch (e) {
-      clearInterval(ticker);
       files = files.map((f) =>
         f.id === fid
-          ? { ...f, status: "error", error: toTranscribeError(e) }
+          ? {
+              ...f,
+              status: "error",
+              error: toTranscribeError(e),
+              stage: null,
+              stageDetail: null,
+            }
           : f,
       );
       expandedId = fid;
+    } finally {
+      if (ticker) clearInterval(ticker);
+      if (unlisten) unlisten();
     }
   }
 
@@ -273,7 +320,7 @@
               onToggle={toggleExpand}
               onRetry={retryFile}
               onRetryWith={retryFileWith}
-              {otherProvider}
+              retryOptions={retryOptions}
             />
           {/each}
         </div>

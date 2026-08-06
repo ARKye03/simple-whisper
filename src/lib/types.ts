@@ -1,5 +1,29 @@
 export type FileStatus = "queued" | "processing" | "completed" | "error";
 
+export type Provider = "groq" | "gemini" | "local";
+
+export const PROVIDERS = ["groq", "gemini", "local"] as const satisfies readonly Provider[];
+
+/** Providers that require an API key. "local" runs on the user's machine. */
+export const KEYED_PROVIDERS = ["groq", "gemini"] as const satisfies readonly Provider[];
+
+export type LocalStage =
+  | "starting"
+  | "loading_model"
+  | "downloading_model"
+  | "cuda_fallback"
+  | "transcribing"
+  | "finalizing";
+
+export type LocalProgressEvent = {
+  job_id: string;
+  stage: LocalStage;
+  progress: number | null;
+  detail: string | null;
+};
+
+export type LocalInstallEvent = { stream: string; line: string };
+
 export type TranscriptSegment = { speaker: string; text: string };
 
 export type Transcript =
@@ -22,11 +46,16 @@ export type TranscribeErrorKind =
   | "FfmpegMissing"
   | "FfmpegFailed"
   | "ApiKeyMissing"
+  | "PythonMissing"
+  | "PythonTooOld"
+  | "LocalRuntimeMissing"
+  | "ModelDownloadFailed"
+  | "LocalRuntimeFailed"
   | "Unknown";
 
 export type TranscribeError = {
   kind: TranscribeErrorKind;
-  provider: "groq" | "gemini" | null;
+  provider: Provider | null;
   message: string;
   retry_after_secs: number | null;
   raw: string | null;
@@ -59,9 +88,11 @@ export type FileItem = {
   transcript: Transcript | null;
   error: TranscribeError | null;
   index: number;
+  stage?: LocalStage | null;
+  stageDetail?: string | null;
 };
 
-export type HistoryProvider = "groq" | "gemini";
+export type HistoryProvider = Provider;
 
 export type HistoryEntry = {
   id: string;

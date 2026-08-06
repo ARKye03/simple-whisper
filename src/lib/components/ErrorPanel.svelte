@@ -6,12 +6,12 @@
 
   type Props = {
     error: TranscribeError;
-    otherProvider?: Provider | null;
+    retryOptions?: Provider[];
     onRetry?: () => void;
     onRetryWith?: (provider: Provider) => void;
   };
 
-  let { error, otherProvider = null, onRetry, onRetryWith }: Props = $props();
+  let { error, retryOptions = [], onRetry, onRetryWith }: Props = $props();
 
   let showDetails = $state(false);
 
@@ -39,6 +39,11 @@
       case "FfmpegMissing": return t.errFfmpegMissingTitle;
       case "FfmpegFailed": return t.errFfmpegFailedTitle;
       case "ApiKeyMissing": return t.errApiKeyMissingTitle;
+      case "PythonMissing": return t.errPythonMissingTitle;
+      case "PythonTooOld": return t.errPythonTooOldTitle;
+      case "LocalRuntimeMissing": return t.errLocalRuntimeMissingTitle;
+      case "ModelDownloadFailed": return t.errModelDownloadFailedTitle;
+      case "LocalRuntimeFailed": return t.errLocalRuntimeFailedTitle;
       default: return t.errUnknownTitle;
     }
   }
@@ -61,6 +66,11 @@
       case "FfmpegMissing": return t.errFfmpegMissingBody;
       case "FfmpegFailed": return t.errFfmpegFailedBody;
       case "ApiKeyMissing": return t.errApiKeyMissingBody(p);
+      case "PythonMissing": return t.errPythonMissingBody;
+      case "PythonTooOld": return t.errPythonTooOldBody;
+      case "LocalRuntimeMissing": return t.errLocalRuntimeMissingBody;
+      case "ModelDownloadFailed": return t.errModelDownloadFailedBody;
+      case "LocalRuntimeFailed": return t.errLocalRuntimeFailedBody;
       default: return e.message || t.errUnknownBody;
     }
   }
@@ -88,21 +98,23 @@
     </div>
   </div>
 
-  {#if onRetry || (otherProvider && onRetryWith)}
+  {#if onRetry || (retryOptions.length && onRetryWith)}
     <div style="display:flex; gap:8px; flex-wrap:wrap; padding-left:26px;">
       {#if onRetry}
         <button class="btn-primary" style="font-size:12px; padding:6px 14px;" onclick={onRetry}>
           {t.errRetry}
         </button>
       {/if}
-      {#if otherProvider && onRetryWith}
-        <button
-          class="btn-ghost"
-          style="font-size:12px; padding:6px 14px;"
-          onclick={() => onRetryWith?.(otherProvider!)}
-        >
-          {t.errRetryWith(t.providerName(otherProvider))}
-        </button>
+      {#if onRetryWith}
+        {#each retryOptions as p (p)}
+          <button
+            class="btn-ghost"
+            style="font-size:12px; padding:6px 14px;"
+            onclick={() => onRetryWith?.(p)}
+          >
+            {t.errRetryWith(t.providerName(p))}
+          </button>
+        {/each}
       {/if}
     </div>
   {/if}

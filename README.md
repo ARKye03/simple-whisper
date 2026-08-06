@@ -5,16 +5,17 @@
 
   Batch transcription for video and audio. Drag, drop, transcribe to DOCX, MD, TXT, or PDF.
 
-  <sub>Tauri 2 · SvelteKit · Groq Whisper · Google Gemini</sub>
+  <sub>Tauri 2 · SvelteKit · Groq Whisper · Google Gemini · faster-whisper</sub>
 </div>
 
 ---
 
 ## Overview
 
-Simple Whisper is a desktop app that turns local media files into clean text. Drop a queue of videos onto the window, pick a provider, model and language, hit transcribe. Each file streams through your chosen provider (Groq Whisper or Google Gemini), then exports to your chosen format. Everything stays on your machine except the audio sent to the provider for inference.
+Simple Whisper is a desktop app that turns local media files into clean text. Drop a queue of videos onto the window, pick a provider, model and language, hit transcribe. Each file goes through your chosen provider — Groq Whisper, Google Gemini, or faster-whisper on your own machine — then exports to your chosen format.
 
-- **Two providers.** Groq Whisper (fast pure ASR) or Google Gemini (cheaper hourly, native speaker diarization).
+- **Three providers.** Groq Whisper (fast pure ASR), Google Gemini (cheaper hourly, native speaker diarization), or **Local** (faster-whisper: no API key, no network, no cost).
+- **Local mode installs itself.** No Python runtime is bundled. If you have Python 3.9+, Settings offers a one-click install that creates an isolated venv and pulls faster-whisper (~250 MB), plus the Whisper model you pick (75 MB–3 GB). Both are deletable from the same panel. Local runs report real progress; the cloud providers can't.
 - **Speaker diarization.** Gemini path labels turns as `Hablante A/B/C…`, rendered as bold paragraph prefixes in DOCX/MD.
 - **Multi-file queue.** Sequential processing with per-file status, progress, and inline preview.
 - **Four output formats.** DOCX, Markdown, TXT, PDF (Latin-1 only).
@@ -45,8 +46,12 @@ Simple Whisper is a desktop app that turns local media files into clean text. Dr
 | FFmpeg        | Audio extraction + chunking             | `brew install ffmpeg` (macOS)        |
 | Groq API key  | Whisper inference (`gsk_*` format)      | <https://console.groq.com/keys>      |
 | Gemini API key| Gemini inference (`AIza*` format)       | <https://aistudio.google.com/apikey> |
+| Python ≥ 3.9  | Local mode only (optional)              | `brew install python` · `sudo apt install python3 python3-venv python3-pip` · `winget install Python.Python.3.12` |
 
-At least one provider key is required. You can configure both and switch between them in Ajustes.
+A provider key is required only for the cloud providers — local mode needs none. You can configure all three and switch between them in Ajustes.
+
+> [!NOTE]
+> Local mode shells out to your system Python, so it does not work in Flatpak or Snap builds (they can't reach `/usr`). Use the AppImage, `.deb` or `.rpm`. GPU acceleration needs CUDA 12 + cuDNN 9; macOS is always CPU (CTranslate2 has no Metal backend) and falls back automatically.
 
 ## Run
 
@@ -85,14 +90,15 @@ Grab the latest DMG from [Releases](https://github.com/ARKye03/simple-whisper/re
 
 ## Configure
 
-Open the gear icon (top-right), pick a provider, and paste the matching API key. Saved automatically on input (350 ms debounce). Each provider stores its own key independently, so you can keep both and flip between them. Validation: Groq keys match `gsk_*`; Gemini keys match `AIza*`.
+Open the gear icon (top-right) and pick a provider. For Groq or Gemini, paste the matching API key — saved automatically on input (350 ms debounce), each provider stored independently. Validation: Groq keys match `gsk_*`; Gemini keys match `AIza*`. Picking **Local** replaces the key field with the local-runtime panel: install, model download, disk usage, and removal.
 
 | Setting       | Options                                                                            |
 |---------------|------------------------------------------------------------------------------------|
 | Theme         | Light, Dark, System                                                                |
-| Provider      | Groq, Gemini                                                                       |
+| Provider      | Groq, Gemini, Local                                                                |
 | Model (Groq)  | `whisper-large-v3-turbo`, `whisper-large-v3`                                       |
 | Model (Gemini)| `gemini-3.1-flash-lite`, `gemini-3-flash-preview`                                  |
+| Model (Local) | `tiny` … `large-v3-turbo` (default), `distil-large-v3` (English only)              |
 | Language      | Auto, ES, EN, FR, DE, PT, IT, JA, ZH                                               |
 | Diarization   | On / off (Gemini only; segments output by speaker)                                 |
 | Format        | TXT, MD, DOCX, PDF (PDF disabled for JA/ZH)                                        |
@@ -120,10 +126,18 @@ chunks[]     ->  base64 inline JSON POST to
 output[]     ->  diarize on:  Vec<TranscriptSegment{speaker,text}> -> Transcript::Diarized
                  diarize off: text concat                          -> Transcript::Plain
 
+Local path (no chunking, no network):
+audio.mp3    ->  <app data>/pyenv/bin/python transcribe.py transcribe --model … --audio …
+NDJSON       ->  stage / download / info / segment / done           (streamed on stdout)
+                 segment.end / info.duration                        -> real progress bar
+done.text                                                           -> Transcript::Plain
+
 Transcript   ->  user picks export format (TXT / MD / DOCX / PDF)
 ```
 
-All FFmpeg calls go through `tokio::process::Command` directly. No `tauri-plugin-shell` dependency. The 14 MB Gemini chunk cap is the source-file threshold; after base64 inflation (~33 %) it fits inside Gemini's 20 MB inline-request cap.
+All FFmpeg and Python calls go through `tokio::process::Command` directly. No `tauri-plugin-shell` dependency. The 14 MB Gemini chunk cap is the source-file threshold; after base64 inflation (~33 %) it fits inside Gemini's 20 MB inline-request cap. The local path skips chunking entirely — there's no request cap, and splitting would only reset Whisper's context.
+
+The local driver is a ~250-line Python script embedded in the binary as source text and rewritten to disk each run. Nothing about the Python runtime is bundled or vendored; the venv lives in app data and can be deleted at any time.
 
 > [!NOTE]
 > Gemini does not see prior chunks when transcribing. Speaker labels (`A`, `B`, …) restart at the beginning of each chunk, so a long file split across multiple requests can have label drift between chunks. v1 ships with this limitation.
@@ -135,16 +149,17 @@ All FFmpeg calls go through `tokio::process::Command` directly. No `tauri-plugin
 | API keys        | macOS Keychain (service `com.arkye03.simple-whisper`, accounts `groq_api_key` / `gemini_api_key`) or fallback |
 | Settings        | `~/Library/Application Support/com.arkye03.simple-whisper/settings.json`                                      |
 | Audio chunks    | `$TMPDIR/simple-whisper/` (system-managed cleanup)                                                            |
+| Local runtime   | `<app data>/pyenv` (venv) and `<app data>/models` (Whisper weights) — both removable from Settings            |
 | Transcriptions  | Saved where you choose, nowhere else                                                                          |
-| Telemetry       | None                                                                                                          |
+| Telemetry       | None (HuggingFace telemetry is explicitly disabled for local model downloads)                                 |
 
-Audio is sent to the selected provider (Groq or Google) for inference. Their respective data policies apply; transcripts are not stored remotely by Simple Whisper.
+With Groq or Gemini, audio is sent to that provider for inference and their data policies apply. With **Local**, audio never leaves the machine — the only network traffic is the one-time faster-whisper install and model download. Transcripts are never stored remotely by Simple Whisper.
 
 ## Tech stack
 
 - **Frontend.** SvelteKit + Svelte 5 runes, static adapter, self-hosted Lora.
 - **Desktop shell.** Tauri 2 (`tauri`, `tauri-plugin-dialog`, `tauri-plugin-store`, `tauri-plugin-opener`).
-- **Transcription.** Groq hosted Whisper (`whisper-large-v3-turbo` / `whisper-large-v3`) or Google Gemini (`gemini-3.1-flash-lite` / `gemini-3-flash-preview`).
+- **Transcription.** Groq hosted Whisper (`whisper-large-v3-turbo` / `whisper-large-v3`), Google Gemini (`gemini-3.1-flash-lite` / `gemini-3-flash-preview`), or local [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2) in a self-managed venv.
 - **HTTP.** `reqwest` (rustls, multipart for Groq, JSON+base64 for Gemini).
 - **Export.** `docx-rs`, `printpdf` (0.7), plain `std::fs` for TXT/MD.
 - **Secrets.** `keyring` 3.x (macOS Security framework backend), one entry per provider.
@@ -154,5 +169,6 @@ Audio is sent to the selected provider (Groq or Google) for inference. Their res
 - [Groq](https://groq.com) for the Whisper inference API.
 - [OpenAI Whisper](https://github.com/openai/whisper), the underlying ASR model.
 - [Google Gemini](https://ai.google.dev/) for the multimodal model with native diarization.
+- [faster-whisper](https://github.com/SYSTRAN/faster-whisper) and [CTranslate2](https://github.com/OpenNMT/CTranslate2) for local inference that's usable on a plain CPU.
 - [Tauri](https://tauri.app) for letting a Rust + web stack feel native.
 - [Lora](https://fonts.google.com/specimen/Lora) by Cyreal, typography.

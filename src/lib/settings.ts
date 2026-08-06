@@ -2,11 +2,15 @@ import { invoke } from "@tauri-apps/api/core";
 import { load, type Store } from "@tauri-apps/plugin-store";
 import { writable, type Writable } from "svelte/store";
 import { applyUiLanguage, type UiLanguagePref } from "$lib/i18n/state.svelte";
+import { KEYED_PROVIDERS, PROVIDERS, type Provider } from "$lib/types";
 
-export type Provider = "groq" | "gemini";
+export type { Provider };
 export type GroqModel = "whisper-large-v3-turbo" | "whisper-large-v3";
 export type GeminiModel = "gemini-3.1-flash-lite" | "gemini-3-flash-preview";
-export type Model = GroqModel | GeminiModel;
+export type LocalModel =
+  | "tiny" | "base" | "small" | "medium"
+  | "large-v2" | "large-v3" | "large-v3-turbo" | "distil-large-v3";
+export type Model = GroqModel | GeminiModel | LocalModel;
 export type Language =
   | "auto" | "es" | "en" | "fr" | "de" | "pt" | "it" | "ja" | "zh";
 export type ApiKeyBackend = "encrypted" | "none";
@@ -17,17 +21,21 @@ export type AppSettings = {
   geminiApiKey: string;
   groqModel: GroqModel;
   geminiModel: GeminiModel;
+  localModel: LocalModel;
   language: Language;
   diarize: boolean;
   uiLanguage: UiLanguagePref;
   historySidebarCollapsed: boolean;
 };
 
+export type KeyedProvider = (typeof KEYED_PROVIDERS)[number];
+
 const STORE_FILE = "settings.json";
 const API_KEY_LEGACY = "groq_api_key";
 const PROVIDER_KEY = "provider";
 const GROQ_MODEL_KEY = "groq_model";
 const GEMINI_MODEL_KEY = "gemini_model";
+const LOCAL_MODEL_KEY = "local_model";
 const LANG_KEY = "language";
 const DIARIZE_KEY = "diarize";
 const UI_LANG_KEY = "ui_language";
@@ -40,6 +48,7 @@ const DEFAULTS: AppSettings = {
   geminiApiKey: "",
   groqModel: "whisper-large-v3-turbo",
   geminiModel: "gemini-3.1-flash-lite",
+  localModel: "large-v3-turbo",
   language: "auto",
   diarize: true,
   uiLanguage: "system",
@@ -55,11 +64,12 @@ async function getStore(): Promise<Store> {
   return cachedStore;
 }
 
-function fallbackKeyFor(provider: Provider): string {
+function fallbackKeyFor(provider: KeyedProvider): string {
   return `${provider}_api_key_fallback`;
 }
 
-async function loadApiKey(provider: Provider): Promise<string> {
+// Narrowed to KeyedProvider on purpose: secrets.rs `account_for` rejects "local".
+async function loadApiKey(provider: KeyedProvider): Promise<string> {
   try {
     return await invoke<string>("secret_get", { provider });
   } catch {
@@ -67,35 +77,85 @@ async function loadApiKey(provider: Provider): Promise<string> {
   }
 }
 
-async function saveApiKey(provider: Provider, key: string): Promise<void> {
+async function saveApiKey(provider: KeyedProvider, key: string): Promise<void> {
   await invoke("secret_set", { provider, value: key.trim() });
 }
 
+export function providerNeedsKey(p: Provider): p is KeyedProvider {
+  return (KEYED_PROVIDERS as readonly Provider[]).includes(p);
+}
+
+export function keyFieldFor(p: Provider): "groqApiKey" | "geminiApiKey" | null {
+  switch (p) {
+    case "groq":
+      return "groqApiKey";
+    case "gemini":
+      return "geminiApiKey";
+    case "local":
+      return null;
+  }
+}
+
+export function apiKeyFor(s: AppSettings, p: Provider): string {
+  const field = keyFieldFor(p);
+  return field ? s[field] : "";
+}
+
 export function activeApiKey(s: AppSettings): string {
-  return s.provider === "groq" ? s.groqApiKey : s.geminiApiKey;
+  return apiKeyFor(s, s.provider);
+}
+
+export function modelFor(s: AppSettings, p: Provider): Model {
+  switch (p) {
+    case "groq":
+      return s.groqModel;
+    case "gemini":
+      return s.geminiModel;
+    case "local":
+      return s.localModel;
+  }
 }
 
 export function activeModel(s: AppSettings): Model {
-  return s.provider === "groq" ? s.groqModel : s.geminiModel;
+  return modelFor(s, s.provider);
 }
 
-export function otherProviderWithKey(s: AppSettings): Provider | null {
-  const other: Provider = s.provider === "groq" ? "gemini" : "groq";
-  const key = other === "groq" ? s.groqApiKey : s.geminiApiKey;
-  return key ? other : null;
+export function isValidKeyFor(p: Provider, key: string): boolean {
+  switch (p) {
+    case "groq":
+      return isValidGroqKey(key);
+    case "gemini":
+      return isValidGeminiKey(key);
+    case "local":
+      return true;
+  }
 }
 
 export function activeIsValidKey(s: AppSettings): boolean {
+  if (!providerNeedsKey(s.provider)) return true;
   const key = activeApiKey(s);
   if (!key) return false;
-  return s.provider === "groq" ? isValidGroqKey(key) : isValidGeminiKey(key);
+  return isValidKeyFor(s.provider, key);
 }
 
-export async function getApiKey(provider: Provider): Promise<string> {
+/**
+ * Every provider other than the current one that could actually run now — a
+ * cloud provider with a key, plus "local" once its runtime is ready. Replaces
+ * the old single "the other one" slot, which silently dropped an alternative.
+ */
+export function retryProviders(s: AppSettings, localReady: boolean): Provider[] {
+  return PROVIDERS.filter((p) => {
+    if (p === s.provider) return false;
+    if (p === "local") return localReady;
+    return !!apiKeyFor(s, p);
+  });
+}
+
+export async function getApiKey(provider: KeyedProvider): Promise<string> {
   return loadApiKey(provider);
 }
 
-export async function setApiKey(provider: Provider, key: string): Promise<ApiKeyBackend> {
+export async function setApiKey(provider: KeyedProvider, key: string): Promise<ApiKeyBackend> {
   await saveApiKey(provider, key);
   const backend: ApiKeyBackend = key.trim() ? "encrypted" : "none";
   apiKeyBackend.set(backend);
@@ -107,7 +167,12 @@ export async function getSettings(): Promise<AppSettings> {
   const provider = (await store.get<Provider>(PROVIDER_KEY)) ?? DEFAULTS.provider;
   const groqKey = await loadApiKey("groq");
   const geminiKey = await loadApiKey("gemini");
-  const activeKey = provider === "groq" ? groqKey : geminiKey;
+  // A keyless provider must not inherit the other provider's "stored encrypted" badge.
+  const activeKey = providerNeedsKey(provider)
+    ? provider === "groq"
+      ? groqKey
+      : geminiKey
+    : "";
   apiKeyBackend.set(activeKey ? "encrypted" : "none");
   return {
     provider,
@@ -117,6 +182,8 @@ export async function getSettings(): Promise<AppSettings> {
       (await store.get<GroqModel>(GROQ_MODEL_KEY)) ?? DEFAULTS.groqModel,
     geminiModel:
       (await store.get<GeminiModel>(GEMINI_MODEL_KEY)) ?? DEFAULTS.geminiModel,
+    localModel:
+      (await store.get<LocalModel>(LOCAL_MODEL_KEY)) ?? DEFAULTS.localModel,
     language: (await store.get<Language>(LANG_KEY)) ?? DEFAULTS.language,
     diarize: (await store.get<boolean>(DIARIZE_KEY)) ?? DEFAULTS.diarize,
     uiLanguage:
@@ -134,6 +201,7 @@ async function updateSettings(patch: Partial<AppSettings>): Promise<void> {
   if (patch.geminiApiKey !== undefined) await setApiKey("gemini", patch.geminiApiKey);
   if (patch.groqModel !== undefined) await store.set(GROQ_MODEL_KEY, patch.groqModel);
   if (patch.geminiModel !== undefined) await store.set(GEMINI_MODEL_KEY, patch.geminiModel);
+  if (patch.localModel !== undefined) await store.set(LOCAL_MODEL_KEY, patch.localModel);
   if (patch.language !== undefined) await store.set(LANG_KEY, patch.language);
   if (patch.diarize !== undefined) await store.set(DIARIZE_KEY, patch.diarize);
   if (patch.uiLanguage !== undefined) await store.set(UI_LANG_KEY, patch.uiLanguage);
@@ -160,7 +228,7 @@ async function migrateSecrets(): Promise<void> {
     await store.delete(API_KEY_LEGACY);
   }
 
-  for (const provider of ["groq", "gemini"] as const) {
+  for (const provider of KEYED_PROVIDERS) {
     const fbKey = fallbackKeyFor(provider);
     const fallback = await store.get<string>(fbKey);
     if (typeof fallback === "string" && fallback.trim()) {
@@ -184,7 +252,7 @@ async function migrateSecrets(): Promise<void> {
   // macOS), so it gets gated by MIGRATION_FLAG and runs at most once. Flag is
   // set unconditionally so a Deny doesn't re-prompt every launch.
   if ((await store.get<boolean>(MIGRATION_FLAG)) !== true) {
-    for (const provider of ["groq", "gemini"] as const) {
+    for (const provider of KEYED_PROVIDERS) {
       try {
         await invoke<boolean>("secret_migrate_from_keychain", { provider });
       } catch {
@@ -220,7 +288,7 @@ export async function patchSettings(p: Partial<AppSettings>): Promise<void> {
     ...(geminiTrim !== undefined ? { geminiApiKey: geminiTrim } : {}),
   }));
   if (p.provider !== undefined) {
-    const key = await loadApiKey(p.provider);
+    const key = providerNeedsKey(p.provider) ? await loadApiKey(p.provider) : "";
     apiKeyBackend.set(key ? "encrypted" : "none");
   }
   if (p.uiLanguage !== undefined) {

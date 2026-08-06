@@ -6,23 +6,42 @@
     settingsStore,
     apiKeyBackend,
     patchSettings,
-    isValidGroqKey,
-    isValidGeminiKey,
     activeApiKey,
     activeModel,
+    providerNeedsKey,
+    keyFieldFor,
+    isValidKeyFor,
     type AppSettings,
     type GroqModel,
     type GeminiModel,
+    type LocalModel,
     type Provider,
     type Language,
   } from "$lib/settings";
+  import {
+    localStatusStore,
+    localInstallLog,
+    localBusy,
+    localDetail,
+    localError,
+    localState,
+    refreshLocalStatus,
+    installLocalRuntime,
+    downloadLocalModel,
+    uninstallLocalRuntime,
+    repairLocalRuntime,
+    pythonInstallHint,
+    LOCAL_MODEL_META,
+  } from "$lib/local";
   import { t, type UiLanguagePref } from "$lib/i18n/state.svelte";
+  import { fmtSize } from "$lib/types";
   import { checkForUpdates } from "$lib/updater";
   import Icon from "./Icons.svelte";
 
   let theme = $state<Theme>("system");
   let showKey = $state(false);
   let updateChecking = $state(false);
+  let purgeModels = $state(false);
   let apiKeySaveState = $state<"idle" | "saving" | "saved" | "error">("idle");
   let apiKeySaveTimer: ReturnType<typeof setTimeout> | null = null;
   let apiKeyDebounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -31,11 +50,12 @@
     theme = await loadTheme();
   });
 
-  const isGemini = $derived($settingsStore.provider === "gemini");
+  const provider = $derived($settingsStore.provider);
+  const isGemini = $derived(provider === "gemini");
+  const needsKey = $derived(providerNeedsKey(provider));
   const currentKey = $derived(activeApiKey($settingsStore));
   const apiKeyValid = $derived(
-    currentKey.length === 0 ||
-      (isGemini ? isValidGeminiKey(currentKey) : isValidGroqKey(currentKey)),
+    currentKey.length === 0 || isValidKeyFor(provider, currentKey),
   );
 
   const apiKeyLabel = $derived(isGemini ? t.apiKeyLabelGemini : t.apiKeyLabelGroq);
@@ -52,11 +72,9 @@
 
   function onApiKeyInput(value: string) {
     const providerAtInput = $settingsStore.provider;
-    settingsStore.update((s) =>
-      providerAtInput === "groq"
-        ? { ...s, groqApiKey: value }
-        : { ...s, geminiApiKey: value },
-    );
+    const field = keyFieldFor(providerAtInput);
+    if (!field) return;
+    settingsStore.update((s) => ({ ...s, [field]: value }));
     if (apiKeyDebounceTimer) clearTimeout(apiKeyDebounceTimer);
     apiKeyDebounceTimer = setTimeout(async () => {
       // If user switched providers during the debounce window, drop this save —
@@ -65,11 +83,7 @@
       if ($settingsStore.provider !== providerAtInput) return;
       apiKeySaveState = "saving";
       try {
-        await patchSettings(
-          providerAtInput === "groq"
-            ? { groqApiKey: value }
-            : { geminiApiKey: value },
-        );
+        await patchSettings({ [field]: value } as Partial<AppSettings>);
         apiKeySaveState = "saved";
         if (apiKeySaveTimer) clearTimeout(apiKeySaveTimer);
         apiKeySaveTimer = setTimeout(() => (apiKeySaveState = "idle"), 2000);
@@ -115,6 +129,7 @@
   const providers: { v: Provider; l: string }[] = $derived([
     { v: "groq", l: t.providerGroq },
     { v: "gemini", l: t.providerGemini },
+    { v: "local", l: t.providerLocal },
   ]);
 
   const languages: { v: Language; l: string }[] = $derived([
@@ -131,6 +146,59 @@
 
   const GROQ_MODELS: GroqModel[] = ["whisper-large-v3-turbo", "whisper-large-v3"];
   const GEMINI_MODELS: GeminiModel[] = ["gemini-3.1-flash-lite", "gemini-3-flash-preview"];
+  const LOCAL_MODELS: LocalModel[] = [
+    "tiny", "base", "small", "medium",
+    "large-v2", "large-v3", "large-v3-turbo", "distil-large-v3",
+  ];
+
+  const modelOptions = $derived.by<{ v: string; l: string }[]>(() => {
+    switch (provider) {
+      case "gemini":
+        return GEMINI_MODELS.map((m) => ({ v: m, l: m }));
+      case "local":
+        return LOCAL_MODELS.map((m) => {
+          const meta = LOCAL_MODEL_META[m];
+          const tags = meta.englishOnly
+            ? `${meta.size} · ${t.localModelEnglishOnly}`
+            : meta.size;
+          return { v: m, l: `${m} — ${tags}` };
+        });
+      case "groq":
+        return GROQ_MODELS.map((m) => ({ v: m, l: m }));
+    }
+  });
+
+  function onModelChange(v: string) {
+    switch (provider) {
+      case "gemini":
+        return patch({ geminiModel: v as GeminiModel });
+      case "local":
+        return patch({ localModel: v as LocalModel });
+      case "groq":
+        return patch({ groqModel: v as GroqModel });
+    }
+  }
+
+  const lStatus = $derived($localStatusStore);
+  const lState = $derived(localState(lStatus, $settingsStore.localModel));
+  const lMeta = $derived(LOCAL_MODEL_META[$settingsStore.localModel]);
+  const logTail = $derived($localInstallLog.slice(-12));
+
+  // Probe on open, and ask for the CUDA check only here — it costs an import
+  // that would slow app boot for no visible benefit.
+  // Depends on the `provider` derived, not `$settingsStore` directly: reading the
+  // store here would respawn the probe on every unrelated settings change.
+  $effect(() => {
+    if ($settingsOpen && provider === "local") {
+      void refreshLocalStatus(true);
+    }
+  });
+
+  async function onUninstall() {
+    if (!confirm(t.localUninstallConfirm)) return;
+    await uninstallLocalRuntime(purgeModels);
+    purgeModels = false;
+  }
 </script>
 
 {#snippet segBtn(active: boolean, label: string, onClick: () => void, disabled = false)}
@@ -146,6 +214,28 @@
       font-weight:500; cursor: {disabled ? 'not-allowed' : 'pointer'};
       opacity: {disabled ? 0.5 : 1};
       transition: all var(--t);
+    "
+  >{label}</button>
+{/snippet}
+
+{#snippet localNote(text: string, warn: boolean)}
+  <p
+    style="
+      font-size:11px; line-height:1.55; margin:0 0 8px;
+      color: {warn ? 'var(--error)' : 'var(--text-3)'};
+      white-space:pre-wrap;
+    "
+  >{warn ? "⚠ " : ""}{text}</p>
+{/snippet}
+
+{#snippet localBtn(label: string, onClick: () => void)}
+  <button
+    onclick={onClick}
+    style="
+      width:100%; margin-top:8px; padding:9px 12px; border-radius:var(--r-md);
+      background:var(--bg-3); border:1px solid var(--border-2);
+      color:var(--text-1); font-family:var(--font); font-size:13px;
+      cursor:pointer; transition: background var(--t);
     "
   >{label}</button>
 {/snippet}
@@ -205,27 +295,15 @@
 
       <div>
         <div style="font-size:11px; font-weight:500; color:var(--text-3); text-transform:uppercase; letter-spacing:0.08em; margin-bottom:8px;">{t.model}</div>
-        {#if isGemini}
-          <select
-            value={$settingsStore.geminiModel}
-            onchange={(e) => patch({ geminiModel: (e.currentTarget as HTMLSelectElement).value as GeminiModel })}
-            style="width:100%; padding:9px 12px; border-radius:var(--r-md); background:var(--bg-3); border:1px solid var(--border-2); color:var(--text-1); font-family:var(--font); font-size:13px; outline:none;"
-          >
-            {#each GEMINI_MODELS as m (m)}
-              <option value={m}>{m}</option>
-            {/each}
-          </select>
-        {:else}
-          <select
-            value={$settingsStore.groqModel}
-            onchange={(e) => patch({ groqModel: (e.currentTarget as HTMLSelectElement).value as GroqModel })}
-            style="width:100%; padding:9px 12px; border-radius:var(--r-md); background:var(--bg-3); border:1px solid var(--border-2); color:var(--text-1); font-family:var(--font); font-size:13px; outline:none;"
-          >
-            {#each GROQ_MODELS as m (m)}
-              <option value={m}>{m}</option>
-            {/each}
-          </select>
-        {/if}
+        <select
+          value={activeModel($settingsStore)}
+          onchange={(e) => onModelChange((e.currentTarget as HTMLSelectElement).value)}
+          style="width:100%; padding:9px 12px; border-radius:var(--r-md); background:var(--bg-3); border:1px solid var(--border-2); color:var(--text-1); font-family:var(--font); font-size:13px; outline:none;"
+        >
+          {#each modelOptions as m (m.v)}
+            <option value={m.v}>{m.l}</option>
+          {/each}
+        </select>
       </div>
 
       <div>
@@ -259,6 +337,7 @@
 
       <div style="height:1px; background:var(--border-1); margin:2px 0;"></div>
 
+      {#if needsKey}
       <div>
         <div style="font-size:11px; font-weight:500; color:var(--text-3); text-transform:uppercase; letter-spacing:0.08em; margin-bottom:8px;">{apiKeyLabel}</div>
         <div style="position:relative;">
@@ -321,6 +400,67 @@
           {/if}
         </p>
       </div>
+      {:else}
+      <div>
+        <div style="font-size:11px; font-weight:500; color:var(--text-3); text-transform:uppercase; letter-spacing:0.08em; margin-bottom:8px;">{t.localRuntime}</div>
+
+        {#if $localBusy === "installing" || $localBusy === "uninstalling"}
+          <p style="font-size:12px; color:var(--text-2); display:flex; align-items:center; gap:7px;">
+            <Icon name="spinner" size={13} /> {t.localInstalling}
+          </p>
+          {#if logTail.length}
+            <pre style="margin-top:8px; max-height:160px; overflow:auto; background:var(--bg-3); border:1px solid var(--border-2); border-radius:var(--r-md); padding:8px 10px; font-size:10px; line-height:1.5; color:var(--text-3); white-space:pre-wrap; word-break:break-all;">{logTail.join("\n")}</pre>
+          {/if}
+        {:else if $localBusy === "downloading"}
+          <p style="font-size:12px; color:var(--text-2); display:flex; align-items:center; gap:7px;">
+            <Icon name="spinner" size={13} /> {t.localModelDownloading}{$localDetail ? ` ${$localDetail}` : ""}
+          </p>
+        {:else if lState === "sandboxed"}
+          {@render localNote(t.localSandboxed, true)}
+        {:else if lState === "python_missing"}
+          {@render localNote(t.localPythonMissing(pythonInstallHint(lStatus)), true)}
+        {:else if lState === "python_too_old"}
+          {@render localNote(t.localPythonTooOld(lStatus?.python?.version ?? "?"), true)}
+        {:else if lState === "venv_broken"}
+          {@render localNote(t.localVenvBroken, true)}
+          {@render localBtn(t.localRepair, repairLocalRuntime)}
+        {:else if lState === "not_installed"}
+          {@render localNote(t.localNotInstalled, false)}
+          {@render localBtn(t.localInstall, installLocalRuntime)}
+        {:else if lState === "unknown"}
+          <p style="font-size:12px; color:var(--text-2); display:flex; align-items:center; gap:7px;">
+            <Icon name="spinner" size={13} /> {t.localProbing}
+          </p>
+        {:else}
+          <p style="font-size:12px; color:var(--success); display:flex; align-items:center; gap:6px;">
+            <Icon name="check" size={12} /> {t.localRuntimeReady(lStatus?.faster_whisper ?? "")}
+          </p>
+          <p style="font-size:10px; color:var(--text-4); margin-top:4px;">
+            {t.localRuntimeDevice(lStatus?.cuda ? "cuda" : "cpu")}
+          </p>
+          {#if lState === "model_missing"}
+            {@render localNote(t.localModelMissing($settingsStore.localModel, lMeta.size), false)}
+            {@render localBtn(t.localModelDownload, () => downloadLocalModel($settingsStore.localModel))}
+          {:else}
+            <p style="font-size:10px; color:var(--text-4); margin-top:4px;">
+              {t.localModelReady($settingsStore.localModel)}
+            </p>
+          {/if}
+          <p style="font-size:10px; color:var(--text-4); margin-top:8px; line-height:1.5;">
+            {t.localDiskUsage(fmtSize(lStatus?.venv_bytes ?? 0), fmtSize(lStatus?.models_bytes ?? 0))}
+          </p>
+          <label style="display:flex; align-items:center; gap:8px; margin-top:8px; cursor:pointer; font-size:11px; color:var(--text-3);">
+            <input type="checkbox" bind:checked={purgeModels} style="width:14px; height:14px; accent-color:var(--accent);" />
+            {t.localUninstallModels}
+          </label>
+          {@render localBtn(t.localUninstall, onUninstall)}
+        {/if}
+
+        {#if $localError}
+          <p style="font-size:10px; color:var(--error); margin-top:8px; line-height:1.5; white-space:pre-wrap;">{$localError}</p>
+        {/if}
+      </div>
+      {/if}
 
       <div style="height:1px; background:var(--border-1); margin:2px 0;"></div>
 
@@ -355,7 +495,7 @@
         letter-spacing:0.03em;
       "
     >
-      <span>{isGemini ? "Google AI" : "Groq API"}</span>
+      <span>{t.providerVendor(provider)}</span>
       <span>{activeModel($settingsStore)}</span>
     </div>
 </div>

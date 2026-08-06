@@ -4,7 +4,7 @@
   import ErrorPanel from "./ErrorPanel.svelte";
   import { t } from "$lib/i18n/state.svelte";
   import type { Provider } from "$lib/settings";
-  import { fmtSize, type FileItem } from "$lib/types";
+  import { fmtSize, type FileItem, type LocalStage } from "$lib/types";
 
   type Props = {
     file: FileItem;
@@ -13,7 +13,7 @@
     onToggle: (id: number) => void;
     onRetry?: (id: number) => void;
     onRetryWith?: (id: number, provider: Provider) => void;
-    otherProvider?: Provider | null;
+    retryOptions?: Provider[];
   };
   let {
     file,
@@ -22,7 +22,7 @@
     onToggle,
     onRetry,
     onRetryWith,
-    otherProvider = null,
+    retryOptions = [],
   }: Props = $props();
 
   const STATUS = $derived({
@@ -34,6 +34,17 @@
 
   const st = $derived(STATUS[file.status]);
   const isClickable = $derived(file.status === "completed" || file.status === "error");
+
+  function stageLabel(stage: LocalStage): string {
+    switch (stage) {
+      case "starting": return t.localStageStarting;
+      case "loading_model": return t.localStageLoadingModel;
+      case "downloading_model": return t.localStageDownloadingModel;
+      case "cuda_fallback": return t.localStageCudaFallback;
+      case "transcribing": return t.localStageTranscribing;
+      case "finalizing": return t.localStageFinalizing;
+    }
+  }
 </script>
 
 <div
@@ -121,6 +132,11 @@
       <div class="progress-track">
         <div class="progress-fill" style="width: {file.progress || 0}%;"></div>
       </div>
+      {#if file.stage}
+        <div style="margin-top:6px; font-size:10px; color:var(--text-4); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+          {stageLabel(file.stage)}{file.stageDetail ? ` · ${file.stageDetail}` : ""}
+        </div>
+      {/if}
     </div>
   {/if}
 
@@ -131,7 +147,7 @@
   {#if expanded && file.status === "error" && file.error}
     <ErrorPanel
       error={file.error}
-      {otherProvider}
+      {retryOptions}
       onRetry={onRetry ? () => onRetry(file.id) : undefined}
       onRetryWith={onRetryWith ? (p) => onRetryWith(file.id, p) : undefined}
     />
