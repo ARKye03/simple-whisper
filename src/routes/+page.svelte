@@ -190,6 +190,9 @@
     }
     if (!additions.length) return;
     files = [...files, ...additions];
+    announce(
+      additions.length === 1 ? t.urlAddedOne : t.urlAddedCount(additions.length),
+    );
 
     // A missing yt-dlp fails every item identically, so say so once instead of
     // firing N probes that all fail the same way.
@@ -206,7 +209,23 @@
       return;
     }
 
-    await Promise.all(additions.map((a) => probeItem(a.id, a.url!)));
+    await probeAll(additions);
+  }
+
+  // Bounded, because every probe is a yt-dlp process and, with cookiesBrowser set,
+  // one macOS Keychain prompt. Pasting a 30-link blob must not spawn 30 of each.
+  const PROBE_CONCURRENCY = 3;
+  async function probeAll(items: FileItem[]) {
+    let next = 0;
+    const worker = async () => {
+      while (next < items.length) {
+        const item = items[next++];
+        await probeItem(item.id, item.url!);
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(PROBE_CONCURRENCY, items.length) }, worker),
+    );
   }
 
   async function probeItem(fid: number, url: string) {
@@ -310,8 +329,13 @@
       });
     }
 
+    // `at === -1` would make the two slices overlap and duplicate every existing
+    // item, which blows up the keyed {#each} on duplicate ids. Append instead.
     const at = files.findIndex((f) => f.id === fid);
-    const next = [...files.slice(0, at), ...items, ...files.slice(at + 1)];
+    const next =
+      at === -1
+        ? [...files, ...items]
+        : [...files.slice(0, at), ...items, ...files.slice(at + 1)];
     files = next.map((f, i) => ({ ...f, index: i }));
 
     announce(
@@ -338,8 +362,8 @@
     );
     if (!urls.length) return; // not a link: leave the paste alone
     e.preventDefault();
+    // onUrlsAdded announces the count it actually queued (duplicates are dropped).
     void onUrlsAdded(urls);
-    announce(urls.length === 1 ? t.urlAddedOne : t.urlAddedCount(urls.length));
   }
 
   function removeFile(id: number) {
@@ -372,6 +396,7 @@
 
   const DL_SHARE = 50; // download owns 0-50% of the bar, transcription 50-100%
   const STALL_MS = 3000; // no progress frame for this long => download is done
+  const STALL_ARM_PCT = 90; // ...but only once the download is nearly finished
 
   /** Monotonic: a real download frame must never visually rewind the pre-roll. */
   function progressWriter(fid: number) {
@@ -472,9 +497,11 @@
         return;
       }
       // Watchdog: yt-dlp's last frame is often 99.x and post-processing emits
-      // nothing. Armed only after a real frame, so a slow start can't trip it.
+      // nothing. Armed only near the end — mid-download gaps are normal (a stalled
+      // socket waits up to --socket-timeout 30s) and the flip is irreversible, so
+      // arming it early would strand the card in a fake "transcribing" state.
       if (stall) clearTimeout(stall);
-      stall = setTimeout(toTranscribePhase, STALL_MS);
+      if (pct >= STALL_ARM_PCT) stall = setTimeout(toTranscribePhase, STALL_MS);
     };
 
     try {
@@ -520,7 +547,10 @@
     // start a download.
     if (file.source === "url" && !file.meta) {
       await probeItem(fid, file.url!);
-      if (files.find((f) => f.id === fid)?.status === "error") return;
+      // The item may also be gone entirely: a playlist re-probe replaces it with its
+      // expanded entries, or removes it if the confirmation was cancelled.
+      const after = files.find((f) => f.id === fid);
+      if (!after || after.status === "error") return;
     }
 
     const args: RunArgs = {
@@ -641,12 +671,7 @@
             </span>
           </div>
         </div>
-        <FileCard
-          file={historyFileItem}
-          expanded={true}
-          onRemove={() => {}}
-          onToggle={() => {}}
-        />
+        <FileCard file={historyFileItem} expanded={true} onToggle={() => {}} />
       </div>
     {:else if !hasFiles}
       <div

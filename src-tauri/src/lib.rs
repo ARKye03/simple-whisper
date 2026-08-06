@@ -154,6 +154,26 @@ fn validate_cookies_browser(value: Option<&str>) -> Result<Option<String>, Trans
     Ok(Some(browser))
 }
 
+// The frontend already filters to http/https, but the command is the trust boundary:
+// keep file://, data:// and bare paths from ever reaching a yt-dlp argv slot.
+fn validate_media_url(url: &str) -> Result<String, TranscribeError> {
+    let url = url.trim();
+    if url.is_empty() {
+        return Err(TranscribeError::new(
+            TranscribeErrorKind::BadRequest,
+            "Falta el enlace",
+        ));
+    }
+    let lower = url.to_ascii_lowercase();
+    if !lower.starts_with("http://") && !lower.starts_with("https://") {
+        return Err(TranscribeError::new(
+            TranscribeErrorKind::UnsupportedUrl,
+            "El enlace debe empezar por http:// o https://",
+        ));
+    }
+    Ok(url.to_string())
+}
+
 fn ytdlp_base_args(cookies_browser: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = vec![
         // A user's ~/.config/yt-dlp/config can set -o, -x, --quiet or --paths and
@@ -836,13 +856,7 @@ async fn probe_url(
     url: String,
     cookies_browser: Option<String>,
 ) -> Result<UrlProbe, TranscribeError> {
-    let url = url.trim().to_string();
-    if url.is_empty() {
-        return Err(TranscribeError::new(
-            TranscribeErrorKind::BadRequest,
-            "Falta el enlace",
-        ));
-    }
+    let url = validate_media_url(&url)?;
     let browser = validate_cookies_browser(cookies_browser.as_deref())?;
     // Reports is_live / is_playlist rather than rejecting: the UI needs to know why
     // a link is unusable, and needs the entries to expand a playlist.
@@ -1079,13 +1093,7 @@ async fn transcribe_url(
     if api_key.trim().is_empty() {
         return Err(TranscribeError::api_key_missing(provider));
     }
-    let url = url.trim().to_string();
-    if url.is_empty() {
-        return Err(TranscribeError::new(
-            TranscribeErrorKind::BadRequest,
-            "Falta el enlace",
-        ));
-    }
+    let url = validate_media_url(&url)?;
     let browser = validate_cookies_browser(cookies_browser.as_deref())?;
     let model = model
         .filter(|m| !m.is_empty())

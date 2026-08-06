@@ -55,9 +55,11 @@
   {/if}
 
   <div style="display:flex; gap:8px; align-items:stretch;">
+    <!-- Deliberately not type="url": that type's value sanitizer strips newlines,
+         which would glue a multi-line paste into one bogus URL. -->
     <input
       id={inputId}
-      type="url"
+      type="text"
       inputmode="url"
       spellcheck="false"
       autocomplete="off"

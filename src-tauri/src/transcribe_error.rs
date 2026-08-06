@@ -270,7 +270,16 @@ pub fn classify_ytdlp(stderr: &str) -> TranscribeError {
     let low = raw.to_lowercase();
     let has = |needle: &str| low.contains(needle);
 
-    let (kind, message) = if has("cookies database") || has("could not find local state file") {
+    // An old yt-dlp rejects flags download_audio_to depends on (--progress-delta
+    // needs 2024.07+, --color 2023.03+) and exits before downloading anything.
+    // check_ytdlp deliberately accepts any version, so this is where a too-old
+    // install gets named instead of surfacing as a bare "La descarga falló".
+    let (kind, message) = if has("no such option") || has("unrecognized arguments") {
+        (
+            TranscribeErrorKind::DownloadFailed,
+            "Tu versión de yt-dlp es demasiado antigua. Actualízala con `brew upgrade yt-dlp` o `pipx upgrade yt-dlp`",
+        )
+    } else if has("cookies database") || has("could not find local state file") {
         (
             TranscribeErrorKind::DownloadAuthRequired,
             "No se encontró la base de cookies de ese navegador. Ábrelo al menos una vez o elige otro",

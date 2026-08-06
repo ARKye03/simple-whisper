@@ -16,7 +16,8 @@
   type Props = {
     file: FileItem;
     expanded: boolean;
-    onRemove: (id: number) => void;
+    /** Omitted for read-only cards (history detail), which hides the trash button. */
+    onRemove?: (id: number) => void;
     onToggle: (id: number) => void;
     onRetry?: (id: number) => void;
     onRetryWith?: (id: number, provider: Provider) => void;
@@ -137,13 +138,13 @@
       {st.label}
     </div>
 
-    {#if removable}
+    {#if removable && onRemove}
       <button
         class="icon-btn"
         style="width:30px; height:30px;"
         onclick={(e) => {
           e.stopPropagation();
-          onRemove(file.id);
+          onRemove?.(file.id);
         }}
         aria-label={t.remove}
       >
