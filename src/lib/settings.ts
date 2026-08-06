@@ -15,6 +15,25 @@ export type Language =
   | "auto" | "es" | "en" | "fr" | "de" | "pt" | "it" | "ja" | "zh";
 export type ApiKeyBackend = "encrypted" | "none";
 
+/** Mirrors yt-dlp's own --cookies-from-browser list, plus an opt-out. */
+export const COOKIE_BROWSERS = [
+  "none", "brave", "chrome", "chromium", "edge", "firefox", "opera", "safari",
+  "vivaldi", "whale",
+] as const;
+export type CookieBrowser = (typeof COOKIE_BROWSERS)[number];
+
+export const COOKIE_BROWSER_LABELS: Record<Exclude<CookieBrowser, "none">, string> = {
+  brave: "Brave",
+  chrome: "Chrome",
+  chromium: "Chromium",
+  edge: "Edge",
+  firefox: "Firefox",
+  opera: "Opera",
+  safari: "Safari",
+  vivaldi: "Vivaldi",
+  whale: "Whale",
+};
+
 export type AppSettings = {
   provider: Provider;
   groqApiKey: string;
@@ -26,9 +45,15 @@ export type AppSettings = {
   diarize: boolean;
   uiLanguage: UiLanguagePref;
   historySidebarCollapsed: boolean;
+  cookiesBrowser: CookieBrowser;
 };
 
 export type KeyedProvider = (typeof KEYED_PROVIDERS)[number];
+
+/** null means: pass no --cookies-from-browser flag at all. */
+export function cookiesArg(s: Pick<AppSettings, "cookiesBrowser">): string | null {
+  return s.cookiesBrowser === "none" ? null : s.cookiesBrowser;
+}
 
 const STORE_FILE = "settings.json";
 const API_KEY_LEGACY = "groq_api_key";
@@ -40,6 +65,7 @@ const LANG_KEY = "language";
 const DIARIZE_KEY = "diarize";
 const UI_LANG_KEY = "ui_language";
 const HISTORY_COLLAPSED_KEY = "history_sidebar_collapsed";
+const COOKIES_BROWSER_KEY = "cookies_browser";
 const MIGRATION_FLAG = "secrets_migrated_v2";
 
 const DEFAULTS: AppSettings = {
@@ -53,6 +79,7 @@ const DEFAULTS: AppSettings = {
   diarize: true,
   uiLanguage: "system",
   historySidebarCollapsed: false,
+  cookiesBrowser: "none",
 };
 
 let cachedStore: Store | null = null;
@@ -191,6 +218,9 @@ export async function getSettings(): Promise<AppSettings> {
     historySidebarCollapsed:
       (await store.get<boolean>(HISTORY_COLLAPSED_KEY)) ??
       DEFAULTS.historySidebarCollapsed,
+    cookiesBrowser:
+      (await store.get<CookieBrowser>(COOKIES_BROWSER_KEY)) ??
+      DEFAULTS.cookiesBrowser,
   };
 }
 
@@ -207,6 +237,8 @@ async function updateSettings(patch: Partial<AppSettings>): Promise<void> {
   if (patch.uiLanguage !== undefined) await store.set(UI_LANG_KEY, patch.uiLanguage);
   if (patch.historySidebarCollapsed !== undefined)
     await store.set(HISTORY_COLLAPSED_KEY, patch.historySidebarCollapsed);
+  if (patch.cookiesBrowser !== undefined)
+    await store.set(COOKIES_BROWSER_KEY, patch.cookiesBrowser);
 }
 
 async function migrateSecrets(): Promise<void> {

@@ -12,7 +12,7 @@
 
 ## Overview
 
-Simple Whisper is a desktop app that turns local media files into clean text. Drop a queue of videos onto the window, pick a provider, model and language, hit transcribe. Each file goes through your chosen provider — Groq Whisper, Google Gemini, or faster-whisper on your own machine — then exports to your chosen format.
+Simple Whisper is a desktop app that turns media into clean text. Drop a queue of videos onto the window — or paste a link and let yt-dlp fetch the audio — then pick a provider, model and language and hit transcribe. Each item goes through your chosen provider — Groq Whisper, Google Gemini, or faster-whisper on your own machine — then exports to your chosen format.
 
 - **Three providers.** Groq Whisper (fast pure ASR), Google Gemini (cheaper hourly, native speaker diarization), or **Local** (faster-whisper: no API key, no network, no cost).
 - **Local mode installs itself.** No Python runtime is bundled. If you have Python 3.9+, Settings offers a one-click install that creates an isolated venv and pulls faster-whisper (~250 MB), plus the Whisper model you pick (75 MB–3 GB). Both are deletable from the same panel. Local runs report real progress; the cloud providers can't.
@@ -20,6 +20,7 @@ Simple Whisper is a desktop app that turns local media files into clean text. Dr
 - **Multi-file queue.** Sequential processing with per-file status, progress, and inline preview.
 - **Four output formats.** DOCX, Markdown, TXT, PDF (Latin-1 only).
 - **Auto-chunking.** Files larger than the provider's per-request cap are split with FFmpeg, then stitched back together (24 MB / 90 min for Groq, 14 MB / 30 min for Gemini to fit base64-inlined audio under the 20 MB request cap).
+- **Transcribe from a link.** Paste, type or drop a URL and yt-dlp downloads just the audio, with live download progress (percent, speed, ETA). Playlists expand into individual queue items after a confirmation. Optional `--cookies-from-browser` for videos that need a signed-in session.
 - **Native drag-and-drop.** OS-level paths via Tauri's webview event, not browser-only.
 - **Settings drawer.** Theme, provider, model, language, format, diarization, API key, all live.
 - **Per-provider key storage.** Separate macOS Keychain entries for each provider (`groq_api_key`, `gemini_api_key`), encrypted plugin-store fallback for unsigned dev builds.
@@ -44,6 +45,7 @@ Simple Whisper is a desktop app that turns local media files into clean text. Dr
 | pnpm          | Package manager                         | `npm i -g pnpm`                      |
 | Rust stable   | Tauri backend                           | <https://rustup.rs>                  |
 | FFmpeg        | Audio extraction + chunking             | `brew install ffmpeg` (macOS)        |
+| yt-dlp        | *Optional* — transcribing links         | `brew install yt-dlp` (macOS)        |
 | Groq API key  | Whisper inference (`gsk_*` format)      | <https://console.groq.com/keys>      |
 | Gemini API key| Gemini inference (`AIza*` format)       | <https://aistudio.google.com/apikey> |
 | Python ≥ 3.9  | Local mode only (optional)              | `brew install python` · `sudo apt install python3 python3-venv python3-pip` · `winget install Python.Python.3.12` |
@@ -52,6 +54,14 @@ A provider key is required only for the cloud providers — local mode needs non
 
 > [!NOTE]
 > Local mode shells out to your system Python, so it does not work in Flatpak or Snap builds (they can't reach `/usr`). Use the AppImage, `.deb` or `.rpm`. GPU acceleration needs CUDA 12 + cuDNN 9; macOS is always CPU (CTranslate2 has no Metal backend) and falls back automatically.
+
+yt-dlp is only needed to transcribe links — local files work without it, and there is no startup nag if it is absent. Ajustes › Descargas shows the detected version. It is probed in `/opt/homebrew/bin`, `/usr/local/bin`, `/opt/local/bin`, `/usr/bin` and `~/.local/bin` (for `pipx install yt-dlp`) before falling back to `PATH`.
+
+### Browser cookies
+
+Some videos require a signed-in session (private, members-only, age-gated). Ajustes › Descargas lets you pick one of `brave, chrome, chromium, edge, firefox, opera, safari, vivaldi, whale`, which is passed to yt-dlp as `--cookies-from-browser`. Cookies are read locally by yt-dlp and never leave your machine.
+
+macOS caveats: Safari requires granting the app **Full Disk Access**, and Chromium-family browsers trigger a Keychain prompt the first time cookies are decrypted. Both cases surface as a specific error on the card rather than a generic failure.
 
 ## Run
 
@@ -109,6 +119,13 @@ Open the gear icon (top-right) and pick a provider. For Groq or Gemini, paste th
 ## How it works
 
 ```
+URL only:
+link         ->  yt-dlp -J --skip-download        ->  title, duration, uploader,
+                 (is it live? a playlist?)            entries[] for playlists
+link         ->  yt-dlp -f 'bestaudio*/best'      ->  downloads/<job>/source.<ext>
+                 (progress streamed to the UI over a tauri Channel)
+
+Both paths:
 video/audio  ->  ffmpeg -ar 16000 -ac 1 -b:a 32k                   ->  audio.mp3
 
 Groq path:
@@ -135,9 +152,14 @@ done.text                                                           -> Transcrip
 Transcript   ->  user picks export format (TXT / MD / DOCX / PDF)
 ```
 
-All FFmpeg and Python calls go through `tokio::process::Command` directly. No `tauri-plugin-shell` dependency. The 14 MB Gemini chunk cap is the source-file threshold; after base64 inflation (~33 %) it fits inside Gemini's 20 MB inline-request cap. The local path skips chunking entirely — there's no request cap, and splitting would only reset Whisper's context.
+All FFmpeg, yt-dlp and Python calls go through `tokio::process::Command` directly. No `tauri-plugin-shell` dependency. The 14 MB Gemini chunk cap is the source-file threshold; after base64 inflation (~33 %) it fits inside Gemini's 20 MB inline-request cap. The local path skips chunking entirely — there's no request cap, and splitting would only reset Whisper's context.
 
 The local driver is a ~250-line Python script embedded in the binary as source text and rewritten to disk each run. Nothing about the Python runtime is bundled or vendored; the venv lives in app data and can be deleted at any time.
+
+Downloads land in a per-job temp directory that is deleted whether the transcription succeeds or fails; a stale-directory sweep reclaims anything a hard quit left behind, and the yt-dlp child is killed if the app exits mid-download. Live streams are rejected before any download starts.
+
+> [!NOTE]
+> There is no cancel button yet. The download is the shortest phase — the provider HTTP calls dominate wall-clock time and are not cancellable today — so a Cancel that stopped working the moment "Descargando" became "Procesando" would be worse than none. Cancellation will land as one change covering both phases.
 
 > [!NOTE]
 > Gemini does not see prior chunks when transcribing. Speaker labels (`A`, `B`, …) restart at the beginning of each chunk, so a long file split across multiple requests can have label drift between chunks. v1 ships with this limitation.

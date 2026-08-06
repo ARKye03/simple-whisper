@@ -90,12 +90,17 @@
               aria-label={t.historyEntryAria(entry.filename)}
             >
               <div class="row-top">
-                <span class="filename" title={entry.filename}>{entry.filename}</span>
+                <span class="filename" title={entry.sourceUrl ?? entry.filename}
+                  >{entry.filename}</span>
               </div>
               <div class="row-meta">
                 <span class="time">{relativeTime(entry.createdAt)}</span>
                 <span class="dot">·</span>
                 <span class="badge">{t.providerName(entry.provider)}</span>
+                {#if entry.sourceUrl}
+                  <span class="dot">·</span>
+                  <span class="badge subtle">{t.historySourceUrlBadge}</span>
+                {/if}
                 {#if entry.diarize}
                   <span class="dot">·</span>
                   <span class="badge subtle">{t.diarize}</span>

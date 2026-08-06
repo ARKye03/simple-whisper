@@ -4,14 +4,20 @@
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import Icon from "./Icons.svelte";
   import { t } from "$lib/i18n/state.svelte";
-  import { MEDIA_EXT, extOf } from "$lib/types";
+  import { MEDIA_EXT, extOf, isSupportedMediaUrl, parseUrlCandidates } from "$lib/types";
 
   type Props = {
     compact?: boolean;
     busy?: boolean;
     onFilesAdded: (paths: string[]) => void;
+    onUrlsAdded?: (urls: string[]) => void;
   };
-  let { compact = false, busy = false, onFilesAdded }: Props = $props();
+  let {
+    compact = false,
+    busy = false,
+    onFilesAdded,
+    onUrlsAdded,
+  }: Props = $props();
 
   let dragging = $state(false);
   let unlisten: (() => void) | null = null;
@@ -58,12 +64,53 @@
     if (paths.length) onFilesAdded(paths);
   }
 
-  function onDragOver(e: DragEvent) {
-    e.preventDefault();
+  // webview.onDragDropEvent above is OS-file-only: a link dragged out of a browser
+  // carries no `paths` and instead arrives as an HTML5 DnD event with a text/uri-list
+  // payload. NOTE: with tauri.conf `dragDropEnabled: true` these events are
+  // documented as swallowed on Windows, so link dropping is a macOS enhancement —
+  // the URL input and the window paste handler are the portable paths.
+  function urlsFromDataTransfer(dt: DataTransfer | null): string[] {
+    if (!dt) return [];
+    const raw = dt.getData("text/uri-list") || dt.getData("text/plain") || "";
+    return raw
+      .split(/\r?\n/)
+      .filter((l) => l && !l.startsWith("#")) // text/uri-list comment lines
+      .flatMap(parseUrlCandidates)
+      .filter(isSupportedMediaUrl);
   }
+
+  function hasLinkPayload(dt: DataTransfer | null): boolean {
+    return !!dt && Array.from(dt.types).some(
+      (ty) => ty === "text/uri-list" || ty === "text/plain",
+    );
+  }
+
+  function onDragEnter(e: DragEvent) {
+    if (busy) return;
+    if (hasLinkPayload(e.dataTransfer)) dragging = true;
+  }
+
+  function onDragOver(e: DragEvent) {
+    e.preventDefault(); // required, or the webview navigates to the dropped URL
+    if (!busy && e.dataTransfer && hasLinkPayload(e.dataTransfer)) {
+      e.dataTransfer.dropEffect = "copy";
+    }
+  }
+
+  function onDragLeave(e: DragEvent) {
+    // dragleave also fires when crossing into a child element; ignore those.
+    const to = e.relatedTarget as Node | null;
+    if (!to || !(e.currentTarget as HTMLElement).contains(to)) dragging = false;
+  }
+
   function onDrop(e: DragEvent) {
-    // Tauri drives the actual file paths; just suppress browser nav.
-    e.preventDefault();
+    e.preventDefault(); // suppress webview navigation
+    dragging = false;
+    if (busy) return;
+    const urls = urlsFromDataTransfer(e.dataTransfer);
+    // Non-URL text is dropped silently, matching filterValid()'s treatment of
+    // unsupported file extensions.
+    if (urls.length) onUrlsAdded?.(urls);
   }
 </script>
 
@@ -73,6 +120,8 @@
     style="display:flex; align-items:center; gap:10px; padding:11px 18px; border-radius:var(--r-lg);"
     onclick={pick}
     ondragover={onDragOver}
+    ondragenter={onDragEnter}
+    ondragleave={onDragLeave}
     ondrop={onDrop}
     role="button"
     tabindex="0"
@@ -89,6 +138,8 @@
     style="display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; padding:56px 40px; min-height:260px;"
     onclick={pick}
     ondragover={onDragOver}
+    ondragenter={onDragEnter}
+    ondragleave={onDragLeave}
     ondrop={onDrop}
     role="button"
     tabindex="0"

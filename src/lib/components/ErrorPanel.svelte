@@ -38,6 +38,11 @@
       case "MalformedResponse": return t.errMalformedTitle;
       case "FfmpegMissing": return t.errFfmpegMissingTitle;
       case "FfmpegFailed": return t.errFfmpegFailedTitle;
+      case "YtdlpMissing": return t.errYtdlpMissingTitle;
+      case "DownloadFailed": return t.errDownloadFailedTitle;
+      case "UnsupportedUrl": return t.errUnsupportedUrlTitle;
+      case "DownloadAuthRequired": return t.errDownloadAuthRequiredTitle;
+      case "LiveUnsupported": return t.errLiveUnsupportedTitle;
       case "ApiKeyMissing": return t.errApiKeyMissingTitle;
       case "PythonMissing": return t.errPythonMissingTitle;
       case "PythonTooOld": return t.errPythonTooOldTitle;
@@ -65,6 +70,11 @@
       case "MalformedResponse": return t.errMalformedBody(p);
       case "FfmpegMissing": return t.errFfmpegMissingBody;
       case "FfmpegFailed": return t.errFfmpegFailedBody;
+      case "YtdlpMissing": return t.errYtdlpMissingBody;
+      case "DownloadFailed": return t.errDownloadFailedBody;
+      case "UnsupportedUrl": return t.errUnsupportedUrlBody;
+      case "DownloadAuthRequired": return t.errDownloadAuthRequiredBody;
+      case "LiveUnsupported": return t.errLiveUnsupportedBody;
       case "ApiKeyMissing": return t.errApiKeyMissingBody(p);
       case "PythonMissing": return t.errPythonMissingBody;
       case "PythonTooOld": return t.errPythonTooOldBody;
@@ -74,6 +84,18 @@
       default: return e.message || t.errUnknownBody;
     }
   }
+
+  // Download failures carry the actionable specifics in `message` (missing cookie DB
+  // vs. Full Disk Access vs. geo-block) that one fixed body can't express. Spanish
+  // only, like every other Rust-side string.
+  const DOWNLOAD_KINDS: TranscribeErrorKind[] = [
+    "DownloadFailed", "UnsupportedUrl", "DownloadAuthRequired", "LiveUnsupported",
+  ];
+  const detail = $derived(
+    DOWNLOAD_KINDS.includes(error.kind) && error.message && error.message !== body
+      ? error.message
+      : null,
+  );
 </script>
 
 <div
@@ -95,6 +117,11 @@
       <div style="font-size:12px; color: var(--text-3); line-height:1.5;">
         {body}
       </div>
+      {#if detail}
+        <div style="font-size:11.5px; color: var(--text-4); line-height:1.5; margin-top:4px;">
+          {detail}
+        </div>
+      {/if}
     </div>
   </div>
 

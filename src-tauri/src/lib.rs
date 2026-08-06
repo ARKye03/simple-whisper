@@ -3,6 +3,7 @@ mod secrets;
 mod transcribe_error;
 
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 
 use base64::Engine;
 use docx_rs::{Docx, Paragraph, Run};
@@ -10,11 +11,14 @@ use printpdf::{BuiltinFont, Mm, PdfDocument};
 use reqwest::multipart;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tauri::ipc::Channel;
 use tauri::AppHandle;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::Command;
 
 use transcribe_error::{
-    classify_gemini, classify_groq, classify_reqwest, TranscribeError, TranscribeErrorKind,
+    classify_gemini, classify_groq, classify_reqwest, classify_ytdlp, TranscribeError,
+    TranscribeErrorKind,
 };
 
 const GROQ_CHUNK_BYTES: u64 = 24 * 1024 * 1024;
@@ -22,6 +26,22 @@ const GROQ_SEGMENT_SECONDS: &str = "5400";
 // Gemini accepts 20MB inline; base64 inflates ~33%, so source chunk must be ≤ ~14MB.
 const GEMINI_CHUNK_BYTES: u64 = 14 * 1024 * 1024;
 const GEMINI_SEGMENT_SECONDS: &str = "1800";
+
+// Prefixes we make yt-dlp print on stdout so progress frames and the final file
+// path can be told apart from anything else it emits.
+const YTDLP_PROGRESS_SENTINEL: &str = "SWPROG|";
+const YTDLP_FILE_SENTINEL: &str = "SWFILE|";
+// Pipe-separated so parse_progress_line can split positionally. Unavailable fields
+// render as the literal "NA"; speed and total_bytes_estimate are floats while
+// downloaded_bytes and eta are ints, so everything is parsed as f64.
+const YTDLP_PROGRESS_FIELDS: &str = "%(progress.status)s|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s|%(progress.fragment_index)s|%(progress.fragment_count)s";
+const PROBE_PLAYLIST_LIMIT: &str = "100";
+const STALE_JOB_SECS: u64 = 6 * 60 * 60;
+
+// Identical to yt-dlp's own supported list (yt_dlp/cookies.py).
+const COOKIE_BROWSERS: &[&str] = &[
+    "brave", "chrome", "chromium", "edge", "firefox", "opera", "safari", "vivaldi", "whale",
+];
 
 // macOS GUI apps launched from Finder inherit only a minimal PATH
 // (/usr/bin:/bin:/usr/sbin:/sbin), so Homebrew/MacPorts binaries are invisible
@@ -41,6 +61,30 @@ fn resolve_ffmpeg() -> String {
     "ffmpeg".to_string()
 }
 
+// Same stripped-PATH problem as resolve_ffmpeg, plus one extra location: unlike
+// ffmpeg, yt-dlp is very commonly installed via pipx or `pip install --user`, which
+// is why the candidate list is built at runtime instead of being a const.
+fn resolve_ytdlp() -> String {
+    let mut candidates: Vec<PathBuf> = [
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/opt/local/bin",
+        "/usr/bin",
+    ]
+    .iter()
+    .map(|d| Path::new(d).join("yt-dlp"))
+    .collect();
+    if let Some(home) = std::env::var_os("HOME") {
+        candidates.push(Path::new(&home).join(".local/bin/yt-dlp"));
+    }
+    for c in &candidates {
+        if c.is_file() {
+            return c.to_string_lossy().to_string();
+        }
+    }
+    "yt-dlp".to_string()
+}
+
 fn temp_dir() -> PathBuf {
     std::env::temp_dir().join("simple-whisper")
 }
@@ -49,6 +93,108 @@ fn ensure_temp_dir() -> Result<PathBuf, String> {
     let dir = temp_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
+}
+
+fn downloads_dir() -> PathBuf {
+    temp_dir().join("downloads")
+}
+
+// pid + nanos is enough to be unique inside one $TMPDIR, which avoids pulling in a
+// uuid dependency for something no one ever reads.
+fn new_job_dir() -> Result<PathBuf, TranscribeError> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = downloads_dir().join(format!("{}-{nanos}", std::process::id()));
+    std::fs::create_dir_all(&dir).map_err(|e| TranscribeError::unknown(e.to_string()))?;
+    Ok(dir)
+}
+
+// Best effort: a hard quit mid-download leaves a job dir holding a possibly huge
+// media file. Every error is swallowed — this must never fail a transcription.
+fn sweep_stale_downloads() {
+    let Ok(entries) = std::fs::read_dir(downloads_dir()) else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_dir() {
+            continue;
+        }
+        let stale = meta
+            .modified()
+            .ok()
+            .and_then(|m| now.duration_since(m).ok())
+            .map(|age| age.as_secs() > STALE_JOB_SECS)
+            .unwrap_or(false);
+        if stale {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
+// The value lands in an argv slot for `--cookies-from-browser`. There is no shell
+// involved (tokio::process execs directly), so this is not about shell injection —
+// it blocks the *argument shapes* yt-dlp itself accepts on that flag, notably
+// `chrome:/some/other/profile` and `firefox::keyring`, which would point cookie
+// extraction at an arbitrary path. It also turns yt-dlp's usage dump into a clean
+// Spanish error.
+fn validate_cookies_browser(value: Option<&str>) -> Result<Option<String>, TranscribeError> {
+    let Some(raw) = value else { return Ok(None) };
+    let browser = raw.trim().to_ascii_lowercase();
+    if browser.is_empty() {
+        return Ok(None);
+    }
+    if !COOKIE_BROWSERS.contains(&browser.as_str()) {
+        return Err(TranscribeError::new(
+            TranscribeErrorKind::BadRequest,
+            format!("Navegador no soportado para cookies: {raw}"),
+        ));
+    }
+    Ok(Some(browser))
+}
+
+// The frontend already filters to http/https, but the command is the trust boundary:
+// keep file://, data:// and bare paths from ever reaching a yt-dlp argv slot.
+fn validate_media_url(url: &str) -> Result<String, TranscribeError> {
+    let url = url.trim();
+    if url.is_empty() {
+        return Err(TranscribeError::new(
+            TranscribeErrorKind::BadRequest,
+            "Falta el enlace",
+        ));
+    }
+    let lower = url.to_ascii_lowercase();
+    if !lower.starts_with("http://") && !lower.starts_with("https://") {
+        return Err(TranscribeError::new(
+            TranscribeErrorKind::UnsupportedUrl,
+            "El enlace debe empezar por http:// o https://",
+        ));
+    }
+    Ok(url.to_string())
+}
+
+fn ytdlp_base_args(cookies_browser: Option<&str>) -> Vec<String> {
+    let mut args: Vec<String> = vec![
+        // A user's ~/.config/yt-dlp/config can set -o, -x, --quiet or --paths and
+        // silently break both the output-path contract and progress parsing.
+        "--ignore-config".into(),
+        "--no-warnings".into(),
+        // Keeps ANSI escapes out of the stderr text classify_ytdlp matches on.
+        "--color".into(),
+        "never".into(),
+        // GUI launches inherit a stripped PATH, so yt-dlp cannot find ffmpeg on its
+        // own — same root cause as resolve_ffmpeg() itself.
+        "--ffmpeg-location".into(),
+        resolve_ffmpeg(),
+    ];
+    if let Some(b) = cookies_browser {
+        args.push("--cookies-from-browser".into());
+        args.push(b.to_string());
+    }
+    args
 }
 
 #[tauri::command]
@@ -67,10 +213,29 @@ async fn check_ffmpeg() -> Result<String, String> {
     Ok(stdout.lines().next().unwrap_or("ffmpeg").to_string())
 }
 
+#[tauri::command]
+async fn check_ytdlp() -> Result<String, String> {
+    let output = Command::new(resolve_ytdlp())
+        .args(["--version"])
+        .output()
+        .await
+        .map_err(|_| "yt-dlp no encontrado en el sistema".to_string())?;
+
+    if !output.status.success() {
+        return Err("yt-dlp falló al ejecutarse".into());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(stdout.lines().next().unwrap_or("yt-dlp").trim().to_string())
+}
+
 async fn extract_audio_inner(video_path: &str) -> Result<String, TranscribeError> {
     let dir = ensure_temp_dir().map_err(TranscribeError::unknown)?;
-    let audio_path = dir.join("audio.mp3");
-    let audio_str = audio_path.to_string_lossy().to_string();
+    extract_audio_to(video_path, &dir.join("audio.mp3")).await
+}
+
+async fn extract_audio_to(video_path: &str, out_path: &Path) -> Result<String, TranscribeError> {
+    let audio_str = out_path.to_string_lossy().to_string();
 
     let output = Command::new(resolve_ffmpeg())
         .args([
@@ -112,6 +277,9 @@ async fn chunk_audio_with(
         return Ok(vec![audio_path.to_string()]);
     }
 
+    // Shared, wiped per call — safe only because the frontend queue awaits one job
+    // at a time. This and extract_audio_inner's fixed audio.mp3 break together the
+    // moment anyone processes the queue in parallel.
     let dir = ensure_temp_dir()
         .map_err(TranscribeError::unknown)?
         .join("chunks");
@@ -415,6 +583,7 @@ fn provider_needs_key(provider: &str) -> bool {
     provider != "local"
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn transcribe_pipeline(
     app: &AppHandle,
     job_id: &str,
@@ -523,6 +692,499 @@ async fn transcribe_video(
         &app, &job_id, audio, &provider, &api_key, &model, &language, diarize,
     )
     .await
+}
+
+#[derive(Serialize)]
+pub struct UrlEntry {
+    pub url: String,
+    pub title: Option<String>,
+    pub duration_secs: Option<f64>,
+}
+
+#[derive(Serialize)]
+pub struct UrlProbe {
+    pub is_playlist: bool,
+    pub title: String,
+    pub duration_secs: Option<f64>,
+    pub uploader: Option<String>,
+    pub extractor: Option<String>,
+    pub is_live: bool,
+    pub thumbnail: Option<String>,
+    pub webpage_url: String,
+    pub entry_count: Option<u64>,
+    pub entries: Vec<UrlEntry>,
+}
+
+// yt-dlp's JSON is enormous, varies per extractor and changes between releases, so a
+// #[derive(Deserialize)] struct would reject a whole payload over one unexpected
+// type. Read through Value with helpers that cannot fail instead.
+fn str_at(v: &Value, key: &str) -> Option<String> {
+    v.get(key)
+        .and_then(|x| x.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+// `duration` is an int for videos (213) but a float for flat-playlist entries
+// (235.0), so everything numeric goes through as_f64.
+fn f64_at(v: &Value, key: &str) -> Option<f64> {
+    v.get(key).and_then(|x| x.as_f64())
+}
+
+fn parse_probe(v: &Value, input_url: &str) -> Result<UrlProbe, TranscribeError> {
+    if v.is_null() {
+        return Err(TranscribeError::new(
+            TranscribeErrorKind::UnsupportedUrl,
+            "No se pudo leer ese enlace",
+        ));
+    }
+
+    let is_playlist = str_at(v, "_type").as_deref() == Some("playlist");
+    let extractor = str_at(v, "extractor").or_else(|| str_at(v, "extractor_key"));
+
+    // The generic extractor hands back *any* HTTP URL as a pseudo-video, so a plain
+    // webpage would probe fine and only fail much later. It marks those with
+    // ext=unknown_video, while a real direct .mp3 link gets ext=mp3 — so this is
+    // precise. Deliberately not keyed on a missing duration: direct media links
+    // legitimately have none.
+    if !is_playlist
+        && extractor.as_deref() == Some("generic")
+        && str_at(v, "ext")
+            .map(|e| e.starts_with("unknown"))
+            .unwrap_or(false)
+    {
+        return Err(TranscribeError::new(
+            TranscribeErrorKind::UnsupportedUrl,
+            "Ese enlace no contiene audio ni video descargable",
+        ));
+    }
+
+    let entries: Vec<UrlEntry> = v
+        .get("entries")
+        .and_then(|e| e.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|e| {
+                    let url = str_at(e, "url").or_else(|| str_at(e, "webpage_url"))?;
+                    Some(UrlEntry {
+                        url,
+                        title: str_at(e, "title"),
+                        duration_secs: f64_at(e, "duration"),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // playlist_count is the real total even when --playlist-end capped `entries`.
+    let entry_count = v
+        .get("playlist_count")
+        .and_then(|c| c.as_u64())
+        .or(if is_playlist {
+            Some(entries.len() as u64)
+        } else {
+            None
+        });
+
+    // is_upcoming is grouped with live: a scheduled premiere has nothing to
+    // transcribe yet. post_live is deliberately allowed — that's a finished stream
+    // and downloads normally.
+    let live_status = str_at(v, "live_status").unwrap_or_default();
+    let is_live = v.get("is_live").and_then(|b| b.as_bool()).unwrap_or(false)
+        || live_status == "is_live"
+        || live_status == "is_upcoming";
+
+    Ok(UrlProbe {
+        is_playlist,
+        title: str_at(v, "title")
+            .or_else(|| str_at(v, "id"))
+            .unwrap_or_else(|| "(sin título)".to_string()),
+        duration_secs: f64_at(v, "duration"),
+        uploader: str_at(v, "uploader")
+            .or_else(|| str_at(v, "channel"))
+            .or_else(|| str_at(v, "uploader_id")),
+        extractor,
+        is_live,
+        thumbnail: str_at(v, "thumbnail"),
+        webpage_url: str_at(v, "webpage_url").unwrap_or_else(|| input_url.to_string()),
+        entry_count,
+        entries,
+    })
+}
+
+async fn probe_inner(url: &str, cookies_browser: Option<&str>) -> Result<UrlProbe, TranscribeError> {
+    let mut args = ytdlp_base_args(cookies_browser);
+    args.extend([
+        "-J".into(),
+        "--skip-download".into(),
+        // Stops a watch?v=X&list=Y URL from expanding into the whole playlist. A
+        // bare playlist or channel URL ignores this flag, and that asymmetry is
+        // exactly how parse_probe tells the two cases apart.
+        "--no-playlist".into(),
+        // Entries as stubs: one page request instead of one per video.
+        "--flat-playlist".into(),
+        "--playlist-end".into(),
+        PROBE_PLAYLIST_LIMIT.into(),
+        "--socket-timeout".into(),
+        "15".into(),
+        "--retries".into(),
+        "2".into(),
+        // End of options, so a URL beginning with '-' is never read as a flag.
+        "--".into(),
+        url.to_string(),
+    ]);
+
+    let output = Command::new(resolve_ytdlp())
+        .args(&args)
+        .output()
+        .await
+        .map_err(|_| TranscribeError::ytdlp_missing())?;
+
+    if !output.status.success() {
+        return Err(classify_ytdlp(&String::from_utf8_lossy(&output.stderr)));
+    }
+
+    // `-J` prints a bare `null` on soft failures, so a zero exit alone is not proof
+    // of success — parse_probe rejects Value::Null.
+    let value: Value = serde_json::from_slice(&output.stdout).map_err(|e| {
+        TranscribeError::new(
+            TranscribeErrorKind::MalformedResponse,
+            "yt-dlp devolvió metadatos ilegibles",
+        )
+        .with_raw(e.to_string())
+    })?;
+
+    parse_probe(&value, url)
+}
+
+#[tauri::command]
+async fn probe_url(
+    url: String,
+    cookies_browser: Option<String>,
+) -> Result<UrlProbe, TranscribeError> {
+    let url = validate_media_url(&url)?;
+    let browser = validate_cookies_browser(cookies_browser.as_deref())?;
+    // Reports is_live / is_playlist rather than rejecting: the UI needs to know why
+    // a link is unusable, and needs the entries to expand a playlist.
+    probe_inner(&url, browser.as_deref()).await
+}
+
+#[derive(Serialize, Clone)]
+pub struct DownloadProgress {
+    pub stage: String,
+    pub percent: f64,
+    pub downloaded_bytes: Option<u64>,
+    pub total_bytes: Option<u64>,
+    pub speed_bps: Option<f64>,
+    pub eta_secs: Option<u64>,
+    pub done: bool,
+}
+
+impl DownloadProgress {
+    fn stage(stage: &str, percent: f64) -> Self {
+        Self {
+            stage: stage.to_string(),
+            percent,
+            downloaded_bytes: None,
+            total_bytes: None,
+            speed_bps: None,
+            eta_secs: None,
+            done: false,
+        }
+    }
+}
+
+fn na_f64(field: Option<&str>) -> Option<f64> {
+    let f = field?.trim();
+    if f.is_empty() || f == "NA" {
+        return None;
+    }
+    f.parse::<f64>().ok()
+}
+
+fn parse_progress_line(rest: &str) -> Option<DownloadProgress> {
+    let mut f = rest.split('|');
+    let status = f.next()?.trim().to_string();
+    let downloaded = na_f64(f.next());
+    let total = na_f64(f.next());
+    let estimate = na_f64(f.next());
+    let speed = na_f64(f.next());
+    let eta = na_f64(f.next());
+    let frag_index = na_f64(f.next());
+    let frag_count = na_f64(f.next());
+
+    let done = status == "finished";
+    let total_any = total.or(estimate);
+
+    // Byte counts first, then fragment counts: with -N on DASH/HLS downloads yt-dlp
+    // frequently reports no total size at all, which would peg the bar at 0%.
+    let percent = if done {
+        100.0
+    } else {
+        match (downloaded, total_any) {
+            (Some(d), Some(t)) if t > 0.0 => (d / t * 100.0).clamp(0.0, 100.0),
+            _ => match (frag_index, frag_count) {
+                (Some(i), Some(c)) if c > 0.0 => (i / c * 100.0).clamp(0.0, 100.0),
+                _ => 0.0,
+            },
+        }
+    };
+
+    Some(DownloadProgress {
+        stage: "download".to_string(),
+        percent,
+        downloaded_bytes: downloaded.map(|d| d as u64),
+        total_bytes: total_any.map(|t| t as u64),
+        speed_bps: speed,
+        eta_secs: eta.map(|e| e.round() as u64),
+        done,
+    })
+}
+
+// No glob crate in the tree, and we own the "source." stem, so a directory scan is
+// enough. Largest file wins so a sidecar can never be picked.
+fn find_downloaded_source(job_dir: &Path) -> Option<String> {
+    let mut best: Option<(u64, String)> = None;
+    for entry in std::fs::read_dir(job_dir).ok()?.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.starts_with("source.") {
+            continue;
+        }
+        if name.ends_with(".part") || name.ends_with(".ytdl") || name.ends_with(".temp") {
+            continue;
+        }
+        let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+        if best.as_ref().map(|(s, _)| size > *s).unwrap_or(true) {
+            best = Some((size, entry.path().to_string_lossy().to_string()));
+        }
+    }
+    best.map(|(_, p)| p)
+}
+
+async fn download_audio_to(
+    job_dir: &Path,
+    url: &str,
+    cookies_browser: Option<&str>,
+    on_progress: &Channel<DownloadProgress>,
+) -> Result<String, TranscribeError> {
+    let out_tmpl = job_dir.join("source.%(ext)s").to_string_lossy().to_string();
+
+    let mut args = ytdlp_base_args(cookies_browser);
+    args.extend([
+        // bestaudio* keeps us on an audio-only stream so yt-dlp never has to merge.
+        // The /best fallback can yield a video container, which is harmless because
+        // extract_audio_to passes -vn.
+        "-f".into(),
+        "bestaudio*/best".into(),
+        "--no-playlist".into(),
+        "--restrict-filenames".into(),
+        "--retries".into(),
+        "3".into(),
+        "--fragment-retries".into(),
+        "3".into(),
+        "-N".into(),
+        "4".into(),
+        "--socket-timeout".into(),
+        "30".into(),
+        // --newline turns the \r-updated progress bar into one line per update,
+        // which is what BufReader::lines() needs. --progress is NOT optional: the
+        // --print below implies --quiet, and noprogress defaults to quiet, so
+        // dropping it means no progress is ever emitted.
+        "--newline".into(),
+        "--progress".into(),
+        "--progress-delta".into(),
+        "0.4".into(),
+        "--progress-template".into(),
+        format!("download:{YTDLP_PROGRESS_SENTINEL}{YTDLP_PROGRESS_FIELDS}"),
+        // Final path after any move, so the extension never has to be guessed.
+        // after_move is a late stage, so this does not imply --simulate.
+        "--print".into(),
+        format!("after_move:{YTDLP_FILE_SENTINEL}%(filepath)s"),
+        "--no-simulate".into(),
+        "-o".into(),
+        out_tmpl,
+        "--".into(),
+        url.to_string(),
+    ]);
+
+    let mut child = Command::new(resolve_ytdlp())
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        // If this future is dropped (app quit, or an early `?` below) the child must
+        // not survive as an orphan still writing hundreds of MB into $TMPDIR.
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|_| TranscribeError::ytdlp_missing())?;
+
+    // .take() moves the handles out, which is required rather than stylistic:
+    // child.wait() needs &mut child, so keeping a borrow of child.stdout alive
+    // across the read loop below would not borrow-check.
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| TranscribeError::unknown("stdout no disponible"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| TranscribeError::unknown("stderr no disponible"))?;
+
+    // Drain stderr on its own task. Child::wait() does not drain the pipes, and
+    // --print's implied --quiet pushes all extractor chatter onto stderr — enough to
+    // fill the pipe buffer and deadlock a stdout-only reader. tokio::join! is not an
+    // option here: one branch would have to borrow `child` mutably.
+    let stderr_task = tokio::spawn(async move {
+        let mut buf = String::new();
+        let mut reader = BufReader::new(stderr);
+        let _ = reader.read_to_string(&mut buf).await;
+        buf
+    });
+
+    let mut final_path: Option<String> = None;
+    let mut lines = BufReader::new(stdout).lines();
+    while let Some(line) = lines
+        .next_line()
+        .await
+        .map_err(|e| TranscribeError::unknown(e.to_string()))?
+    {
+        if let Some(rest) = line.strip_prefix(YTDLP_PROGRESS_SENTINEL) {
+            if let Some(p) = parse_progress_line(rest) {
+                // Ignore send errors: a closed window is not a download failure.
+                let _ = on_progress.send(p);
+            }
+        } else if let Some(path) = line.strip_prefix(YTDLP_FILE_SENTINEL) {
+            final_path = Some(path.trim().to_string());
+        }
+    }
+
+    // stdout is at EOF, so yt-dlp is exiting and this returns immediately.
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| TranscribeError::unknown(e.to_string()))?;
+    let stderr_text = stderr_task.await.unwrap_or_default();
+
+    if !status.success() {
+        return Err(classify_ytdlp(&stderr_text));
+    }
+
+    // yt-dlp exits 0 when a filter skips a video, so success-with-no-file is a
+    // reachable state and deserves its own message rather than a confusing ffmpeg
+    // failure downstream.
+    final_path
+        .filter(|p| Path::new(p).is_file())
+        .or_else(|| find_downloaded_source(job_dir))
+        .ok_or_else(|| {
+            TranscribeError::new(
+                TranscribeErrorKind::DownloadFailed,
+                "yt-dlp terminó sin dejar un archivo de audio",
+            )
+            .with_raw(stderr_text)
+        })
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn transcribe_url(
+    app: AppHandle,
+    url: String,
+    provider: String,
+    api_key: String,
+    model: Option<String>,
+    language: Option<String>,
+    diarize: Option<bool>,
+    cookies_browser: Option<String>,
+    job_id: Option<String>,
+    on_progress: Channel<DownloadProgress>,
+) -> Result<Transcript, TranscribeError> {
+    if provider_needs_key(&provider) && api_key.trim().is_empty() {
+        return Err(TranscribeError::api_key_missing(provider));
+    }
+    let url = validate_media_url(&url)?;
+    let browser = validate_cookies_browser(cookies_browser.as_deref())?;
+    let model = model
+        .filter(|m| !m.is_empty())
+        .unwrap_or_else(|| default_model(&provider).to_string());
+    let language = language.unwrap_or_else(|| "auto".to_string());
+    let diarize = diarize.unwrap_or(false);
+    let job_id = job_id.unwrap_or_default();
+
+    // Probing first is a correctness requirement, not a nicety: yt-dlp would happily
+    // record a live stream forever, and a bare playlist URL would otherwise collapse
+    // to whatever --no-playlist picks.
+    let probe = probe_inner(&url, browser.as_deref()).await?;
+    if probe.is_live {
+        return Err(TranscribeError::new(
+            TranscribeErrorKind::LiveUnsupported,
+            "Las transmisiones en vivo no se pueden transcribir",
+        ));
+    }
+    if probe.is_playlist {
+        return Err(TranscribeError::new(
+            TranscribeErrorKind::BadRequest,
+            "Ese enlace es una lista de reproducción. Elige un video concreto",
+        ));
+    }
+
+    sweep_stale_downloads();
+    let job_dir = new_job_dir()?;
+
+    let result = transcribe_url_inner(
+        &app,
+        &job_id,
+        &job_dir,
+        &url,
+        browser.as_deref(),
+        &provider,
+        &api_key,
+        &model,
+        &language,
+        diarize,
+        &on_progress,
+    )
+    .await;
+
+    // Single cleanup path for both outcomes: the job dir holds the download and the
+    // extracted mp3, and nothing outside this call references either.
+    let _ = std::fs::remove_dir_all(&job_dir);
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn transcribe_url_inner(
+    app: &AppHandle,
+    job_id: &str,
+    job_dir: &Path,
+    url: &str,
+    cookies_browser: Option<&str>,
+    provider: &str,
+    api_key: &str,
+    model: &str,
+    language: &str,
+    diarize: bool,
+    on_progress: &Channel<DownloadProgress>,
+) -> Result<Transcript, TranscribeError> {
+    let source = download_audio_to(job_dir, url, cookies_browser, on_progress).await?;
+
+    let _ = on_progress.send(DownloadProgress::stage("extract", 0.0));
+    let audio = extract_audio_to(&source, &job_dir.join("audio.mp3")).await?;
+
+    // The source can be hundreds of MB; only the 32kbps mp3 matters from here on.
+    let _ = std::fs::remove_file(&source);
+
+    // The HTTP legs have no progress signal, so this is a stage marker, not a bar.
+    let _ = on_progress.send(DownloadProgress::stage("transcribe", 0.0));
+    let transcript = transcribe_pipeline(
+        app, job_id, audio, provider, api_key, model, language, diarize,
+    )
+    .await?;
+
+    let mut finished = DownloadProgress::stage("transcribe", 100.0);
+    finished.done = true;
+    let _ = on_progress.send(finished);
+
+    Ok(transcript)
 }
 
 fn save_docx(transcript: &Transcript, path: &str) -> Result<(), String> {
@@ -680,7 +1342,10 @@ pub fn run() {
     builder
         .invoke_handler(tauri::generate_handler![
             check_ffmpeg,
+            check_ytdlp,
+            probe_url,
             transcribe_video,
+            transcribe_url,
             save_transcript,
             secrets::secret_get,
             secrets::secret_set,
