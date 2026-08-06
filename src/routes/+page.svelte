@@ -1,17 +1,22 @@
 <script lang="ts">
   import { Channel, invoke } from "@tauri-apps/api/core";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { ask } from "@tauri-apps/plugin-dialog";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { onDestroy } from "svelte";
   import { settingsOpen } from "$lib/drawer";
   import {
+    apiKeyFor,
     cookiesArg,
     getSettings,
-    otherProviderWithKey,
+    modelFor,
+    providerNeedsKey,
+    retryProviders,
     settingsStore,
     type AppSettings,
     type Provider,
   } from "$lib/settings";
+  import { localReady, localStatusStore } from "$lib/local";
   import {
     addHistoryEntry,
     historySelectionStore,
@@ -34,6 +39,7 @@
     urlMetaFrom,
     type DownloadProgress,
     type FileItem,
+    type LocalProgressEvent,
     type TranscribeErrorKind,
     type Transcript,
     type UrlProbe,
@@ -48,8 +54,13 @@
   const unsubSettings = settingsStore.subscribe((s) => (lastSettings = s));
   onDestroy(unsubSettings);
 
-  const otherProvider = $derived<Provider | null>(
-    lastSettings ? otherProviderWithKey(lastSettings) : null,
+  const retryOptions = $derived<Provider[]>(
+    lastSettings
+      ? retryProviders(
+          lastSettings,
+          localReady($localStatusStore, lastSettings.localModel),
+        )
+      : [],
   );
 
   let viewingHistoryId = $state<string | null>(null);
@@ -385,13 +396,11 @@
   }
 
   function effectiveKey(s: AppSettings, override: Provider | null): string {
-    const p = effectiveProvider(s, override);
-    return p === "groq" ? s.groqApiKey : s.geminiApiKey;
+    return apiKeyFor(s, effectiveProvider(s, override));
   }
 
   function effectiveModel(s: AppSettings, override: Provider | null): string {
-    const p = effectiveProvider(s, override);
-    return p === "groq" ? s.groqModel : s.geminiModel;
+    return modelFor(s, effectiveProvider(s, override));
   }
 
   const DL_SHARE = 50; // download owns 0-50% of the bar, transcription 50-100%
@@ -423,13 +432,38 @@
     language: AppSettings["language"];
     diarize: boolean;
     cookiesBrowser: string | null;
+    jobId: string;
   };
 
+  /**
+   * Real stage/progress frames from the local runtime, scaled into [from, to].
+   * Must be registered before `invoke`: the model-load and download stages fire
+   * early and would otherwise be lost.
+   */
+  function listenLocal(fid: number, a: RunArgs, write: (p: number) => void, from: number) {
+    if (a.provider !== "local") return Promise.resolve<UnlistenFn | null>(null);
+    return listen<LocalProgressEvent>("local:progress", (e) => {
+      if (e.payload.job_id !== a.jobId) return;
+      patchItem(fid, { stage: e.payload.stage, stageDetail: e.payload.detail });
+      if (e.payload.progress != null) {
+        write(from + (e.payload.progress * (100 - from)) / 100);
+      }
+    });
+  }
+
   async function runLocalFile(fid: number, path: string, a: RunArgs): Promise<Transcript> {
-    patchItem(fid, { status: "processing", progress: 5, error: null });
+    patchItem(fid, {
+      status: "processing",
+      progress: 5,
+      error: null,
+      stage: null,
+      stageDetail: null,
+    });
     const write = progressWriter(fid);
     write(5);
-    const ticker = creep(write, 5, 92, 6);
+    // Only the cloud providers need the fake ticker; local reports real stages.
+    const unlisten = await listenLocal(fid, a, write, 5);
+    const ticker = unlisten ? null : creep(write, 5, 92, 6);
     try {
       return await invoke<Transcript>("transcribe_video", {
         videoPath: path,
@@ -438,9 +472,11 @@
         model: a.model,
         language: a.language,
         diarize: a.diarize,
+        jobId: a.jobId,
       });
     } finally {
-      clearInterval(ticker);
+      if (ticker) clearInterval(ticker);
+      unlisten?.();
     }
   }
 
@@ -450,6 +486,8 @@
       progress: 1,
       error: null,
       download: null,
+      stage: null,
+      stageDetail: null,
     });
 
     const write = progressWriter(fid);
@@ -477,7 +515,8 @@
       }
       patchItem(fid, { status: "processing", download: null });
       write(DL_SHARE);
-      ticker = creep(write, DL_SHARE, 96, 4);
+      // Local runs get real frames from the `local:progress` listener instead.
+      if (a.provider !== "local") ticker = creep(write, DL_SHARE, 96, 4);
     }
 
     const onProgress = new Channel<DownloadProgress>();
@@ -504,6 +543,8 @@
       if (pct >= STALL_ARM_PCT) stall = setTimeout(toTranscribePhase, STALL_MS);
     };
 
+    const unlisten = await listenLocal(fid, a, write, DL_SHARE);
+
     try {
       return await invoke<Transcript>("transcribe_url", {
         url,
@@ -513,6 +554,7 @@
         language: a.language,
         diarize: a.diarize,
         cookiesBrowser: a.cookiesBrowser,
+        jobId: a.jobId,
         onProgress,
       });
     } finally {
@@ -520,6 +562,7 @@
       stopPreroll();
       if (stall) clearTimeout(stall);
       if (ticker) clearInterval(ticker);
+      unlisten?.();
     }
   }
 
@@ -528,7 +571,7 @@
     const provider = effectiveProvider(s, override);
     const apiKey = effectiveKey(s, override);
 
-    if (!apiKey) {
+    if (providerNeedsKey(provider) && !apiKey) {
       patchItem(fid, {
         status: "error",
         error: localTranscribeError("ApiKeyMissing", "Missing API key", provider),
@@ -560,6 +603,7 @@
       language: s.language,
       diarize: provider === "gemini" ? s.diarize : false,
       cookiesBrowser: cookiesArg(s),
+      jobId: crypto.randomUUID(),
     };
 
     try {
@@ -574,6 +618,8 @@
         transcript,
         error: null,
         download: null,
+        stage: null,
+        stageDetail: null,
       });
       expandedId = fid;
 
@@ -599,6 +645,8 @@
         status: "error",
         error: toTranscribeError(e),
         download: null,
+        stage: null,
+        stageDetail: null,
       });
       expandedId = fid;
     }
@@ -707,7 +755,7 @@
               onToggle={toggleExpand}
               onRetry={retryFile}
               onRetryWith={retryFileWith}
-              {otherProvider}
+              retryOptions={retryOptions}
             />
           {/each}
         </div>

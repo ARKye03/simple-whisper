@@ -7,7 +7,6 @@
     deleteHistoryEntry,
     clearHistory,
   } from "$lib/history";
-  import type { HistoryEntry } from "$lib/types";
 
   type Props = {
     collapsed: boolean;
@@ -27,10 +26,6 @@
     if (hr < 24) return t.historyHoursAgo(hr);
     const day = Math.floor(hr / 24);
     return t.historyDaysAgo(day);
-  }
-
-  function providerLabel(p: HistoryEntry["provider"]): string {
-    return p === "groq" ? t.providerGroq : t.providerGemini;
   }
 
   function selectEntry(id: string) {
@@ -101,7 +96,7 @@
               <div class="row-meta">
                 <span class="time">{relativeTime(entry.createdAt)}</span>
                 <span class="dot">·</span>
-                <span class="badge">{providerLabel(entry.provider)}</span>
+                <span class="badge">{t.providerName(entry.provider)}</span>
                 {#if entry.sourceUrl}
                   <span class="dot">·</span>
                   <span class="badge subtle">{t.historySourceUrlBadge}</span>

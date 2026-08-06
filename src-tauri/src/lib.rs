@@ -1,3 +1,4 @@
+mod local;
 mod secrets;
 mod transcribe_error;
 
@@ -11,6 +12,7 @@ use reqwest::multipart;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::ipc::Channel;
+use tauri::AppHandle;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::Command;
 
@@ -566,14 +568,25 @@ enum GeminiResult {
     Diarized(Vec<TranscriptSegment>),
 }
 
+// Empty for unknown providers, so transcribe_pipeline's catch-all reports the
+// real problem instead of the request going out with a Groq model name.
 fn default_model(provider: &str) -> &'static str {
     match provider {
+        "groq" => "whisper-large-v3-turbo",
         "gemini" => "gemini-3.1-flash-lite",
-        _ => "whisper-large-v3-turbo",
+        "local" => local::DEFAULT_MODEL,
+        _ => "",
     }
 }
 
+fn provider_needs_key(provider: &str) -> bool {
+    provider != "local"
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn transcribe_pipeline(
+    app: &AppHandle,
+    job_id: &str,
     audio_path: String,
     provider: &str,
     api_key: &str,
@@ -639,6 +652,12 @@ async fn transcribe_pipeline(
                 Ok(Transcript::Plain { text: out })
             }
         }
+        // No chunking: the local runtime reads the file directly, so splitting
+        // would only cost an extra ffmpeg pass and reset Whisper's context.
+        "local" => {
+            let text = local::transcribe(app, job_id, &audio_path, model, language).await?;
+            Ok(Transcript::Plain { text })
+        }
         other => Err(TranscribeError::new(
             TranscribeErrorKind::BadRequest,
             format!("Proveedor desconocido: {other}"),
@@ -647,35 +666,18 @@ async fn transcribe_pipeline(
 }
 
 #[tauri::command]
-async fn transcribe_audio(
-    audio_path: String,
-    provider: String,
-    api_key: String,
-    model: Option<String>,
-    language: Option<String>,
-    diarize: Option<bool>,
-) -> Result<Transcript, TranscribeError> {
-    if api_key.trim().is_empty() {
-        return Err(TranscribeError::api_key_missing(provider));
-    }
-    let model = model
-        .filter(|m| !m.is_empty())
-        .unwrap_or_else(|| default_model(&provider).to_string());
-    let language = language.unwrap_or_else(|| "auto".to_string());
-    let diarize = diarize.unwrap_or(false);
-    transcribe_pipeline(audio_path, &provider, &api_key, &model, &language, diarize).await
-}
-
-#[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn transcribe_video(
+    app: AppHandle,
     video_path: String,
     provider: String,
     api_key: String,
     model: Option<String>,
     language: Option<String>,
     diarize: Option<bool>,
+    job_id: Option<String>,
 ) -> Result<Transcript, TranscribeError> {
-    if api_key.trim().is_empty() {
+    if provider_needs_key(&provider) && api_key.trim().is_empty() {
         return Err(TranscribeError::api_key_missing(provider));
     }
     let model = model
@@ -683,9 +685,13 @@ async fn transcribe_video(
         .unwrap_or_else(|| default_model(&provider).to_string());
     let language = language.unwrap_or_else(|| "auto".to_string());
     let diarize = diarize.unwrap_or(false);
+    let job_id = job_id.unwrap_or_default();
 
     let audio = extract_audio_inner(&video_path).await?;
-    transcribe_pipeline(audio, &provider, &api_key, &model, &language, diarize).await
+    transcribe_pipeline(
+        &app, &job_id, audio, &provider, &api_key, &model, &language, diarize,
+    )
+    .await
 }
 
 #[derive(Serialize)]
@@ -1081,6 +1087,7 @@ async fn download_audio_to(
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 async fn transcribe_url(
+    app: AppHandle,
     url: String,
     provider: String,
     api_key: String,
@@ -1088,9 +1095,10 @@ async fn transcribe_url(
     language: Option<String>,
     diarize: Option<bool>,
     cookies_browser: Option<String>,
+    job_id: Option<String>,
     on_progress: Channel<DownloadProgress>,
 ) -> Result<Transcript, TranscribeError> {
-    if api_key.trim().is_empty() {
+    if provider_needs_key(&provider) && api_key.trim().is_empty() {
         return Err(TranscribeError::api_key_missing(provider));
     }
     let url = validate_media_url(&url)?;
@@ -1100,6 +1108,7 @@ async fn transcribe_url(
         .unwrap_or_else(|| default_model(&provider).to_string());
     let language = language.unwrap_or_else(|| "auto".to_string());
     let diarize = diarize.unwrap_or(false);
+    let job_id = job_id.unwrap_or_default();
 
     // Probing first is a correctness requirement, not a nicety: yt-dlp would happily
     // record a live stream forever, and a bare playlist URL would otherwise collapse
@@ -1122,6 +1131,8 @@ async fn transcribe_url(
     let job_dir = new_job_dir()?;
 
     let result = transcribe_url_inner(
+        &app,
+        &job_id,
         &job_dir,
         &url,
         browser.as_deref(),
@@ -1142,6 +1153,8 @@ async fn transcribe_url(
 
 #[allow(clippy::too_many_arguments)]
 async fn transcribe_url_inner(
+    app: &AppHandle,
+    job_id: &str,
     job_dir: &Path,
     url: &str,
     cookies_browser: Option<&str>,
@@ -1162,8 +1175,10 @@ async fn transcribe_url_inner(
 
     // The HTTP legs have no progress signal, so this is a stage marker, not a bar.
     let _ = on_progress.send(DownloadProgress::stage("transcribe", 0.0));
-    let transcript =
-        transcribe_pipeline(audio, provider, api_key, model, language, diarize).await?;
+    let transcript = transcribe_pipeline(
+        app, job_id, audio, provider, api_key, model, language, diarize,
+    )
+    .await?;
 
     let mut finished = DownloadProgress::stage("transcribe", 100.0);
     finished.done = true;
@@ -1329,13 +1344,16 @@ pub fn run() {
             check_ffmpeg,
             check_ytdlp,
             probe_url,
-            transcribe_audio,
             transcribe_video,
             transcribe_url,
             save_transcript,
             secrets::secret_get,
             secrets::secret_set,
             secrets::secret_migrate_from_keychain,
+            local::local_probe,
+            local::local_install,
+            local::local_download_model,
+            local::local_uninstall,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

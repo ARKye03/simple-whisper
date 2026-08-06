@@ -5,6 +5,7 @@
   import { loadTheme } from "$lib/theme";
   import { initSettings, settingsStore, patchSettings } from "$lib/settings";
   import { initHistory } from "$lib/history";
+  import { refreshLocalStatus } from "$lib/local";
   import { checkForUpdates } from "$lib/updater";
   import { t } from "$lib/i18n/state.svelte";
   import Header from "$lib/components/Header.svelte";
@@ -26,6 +27,7 @@
     } catch {
       ffmpegStatus = "missing";
     }
+    refreshLocalStatus().catch(() => {});
     checkForUpdates({ silent: true }).catch((err) =>
       console.error("Silent update check failed:", err),
     );

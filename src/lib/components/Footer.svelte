@@ -19,5 +19,5 @@
   "
 >
   <span>{t.brand}</span>
-  <span>{$settingsStore.provider === "gemini" ? "Google" : "Groq"} · {activeModel($settingsStore)}</span>
+  <span>{t.providerVendor($settingsStore.provider)} · {activeModel($settingsStore)}</span>
 </footer>

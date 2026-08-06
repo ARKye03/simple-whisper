@@ -8,6 +8,7 @@ export const es = {
   provider: "Proveedor",
   providerGroq: "Groq",
   providerGemini: "Gemini",
+  providerLocal: "Local",
 
   // API key (shared scaffold; provider-specific labels below)
   apiKey: "API Key",
@@ -50,6 +51,49 @@ export const es = {
   languageAuto: "Auto-detectar",
   diarize: "Diarización",
   diarizeHint: "Separar e identificar hablantes (solo Gemini).",
+
+  // Local runtime (faster-whisper)
+  localRuntime: "Entorno local",
+  localNoKeyNeeded: "El modo local no necesita clave API: todo se procesa en tu equipo.",
+  localRuntimeReady: (v: string) => `faster-whisper ${v} instalado`,
+  localRuntimeDevice: (d: string): string =>
+    d === "cuda" ? "Acelerado por GPU (CUDA)" : "Procesando en CPU",
+  localSandboxed:
+    "El modo local no está disponible en compilaciones Flatpak/Snap, porque no pueden usar el Python del sistema. Usa el AppImage, .deb o .rpm.",
+  localPythonMissing: (cmd: string) =>
+    `No se encontró Python 3.9 o superior. Instálalo con \`${cmd}\` y vuelve a abrir Ajustes.`,
+  localPythonTooOld: (v: string) =>
+    `Se encontró Python ${v}, pero se necesita 3.9 o superior.`,
+  localPythonFound: (v: string, path: string) => `Python ${v} · ${path}`,
+  localNotInstalled:
+    "Se creará un entorno de Python aislado y se instalará faster-whisper (~250 MB). Solo se hace una vez.",
+  localInstall: "Instalar entorno local",
+  localInstalling: "Instalando…",
+  localProbing: "Comprobando el entorno local…",
+  localInstallLog: "Registro de instalación",
+  localVenvBroken:
+    "El entorno local dejó de funcionar (suele pasar al actualizar Python). Reinstálalo para arreglarlo.",
+  localRepair: "Reinstalar entorno",
+  localModelMissing: (m: string, size: string) =>
+    `El modelo ${m} (${size}) aún no está descargado. Se descargará al transcribir, o puedes hacerlo ahora.`,
+  localModelDownload: "Descargar modelo",
+  localModelDownloading: "Descargando modelo…",
+  localModelReady: (m: string) => `Modelo ${m} listo`,
+  localModelEnglishOnly: "solo inglés",
+  localUninstall: "Eliminar entorno local",
+  localUninstallModels: "Eliminar también los modelos descargados",
+  localUninstallConfirm:
+    "¿Eliminar el entorno local? Podrás reinstalarlo cuando quieras.",
+  localDiskUsage: (venv: string, models: string) =>
+    `Entorno: ${venv} · Modelos: ${models}`,
+
+  // Local transcription stages
+  localStageStarting: "Iniciando…",
+  localStageLoadingModel: "Cargando modelo…",
+  localStageDownloadingModel: "Descargando modelo…",
+  localStageCudaFallback: "GPU no disponible, usando CPU…",
+  localStageTranscribing: "Transcribiendo…",
+  localStageFinalizing: "Finalizando…",
 
   // Drop zone
   dropHero: "Arrastra tus videos aquí",
@@ -151,7 +195,10 @@ export const es = {
   historyOpenSource: "Abrir enlace original",
 
   // Provider display names
-  providerName: (p: string) => (p === "groq" ? "Groq" : p === "gemini" ? "Gemini" : p),
+  providerName: (p: string) =>
+    p === "groq" ? "Groq" : p === "gemini" ? "Gemini" : p === "local" ? "Local" : p,
+  providerVendor: (p: string): string =>
+    p === "gemini" ? "Google" : p === "local" ? "En tu equipo" : "Groq",
 
   // Transcription errors — titles
   errAuthInvalidTitle: "Clave API inválida",
@@ -174,6 +221,11 @@ export const es = {
   errDownloadAuthRequiredTitle: "El enlace requiere iniciar sesión",
   errLiveUnsupportedTitle: "Transmisión en directo",
   errApiKeyMissingTitle: "Falta clave API",
+  errPythonMissingTitle: "Python no encontrado",
+  errPythonTooOldTitle: "Python demasiado antiguo",
+  errLocalRuntimeMissingTitle: "Entorno local no instalado",
+  errModelDownloadFailedTitle: "No se pudo descargar el modelo",
+  errLocalRuntimeFailedTitle: "El entorno local falló",
   errUnknownTitle: "Error desconocido",
 
   // Transcription errors — bodies (provider name interpolated)
@@ -218,6 +270,16 @@ export const es = {
     "No se pueden transcribir transmisiones en directo. Espera a que termine y usa el enlace de la grabación.",
   errApiKeyMissingBody: (p: string) =>
     `Configura una clave de ${p} en Ajustes.`,
+  errPythonMissingBody:
+    "El modo local necesita Python 3.9 o superior. Instálalo y vuelve a intentarlo desde Ajustes.",
+  errPythonTooOldBody:
+    "Actualiza Python a la versión 3.9 o superior para usar el modo local.",
+  errLocalRuntimeMissingBody:
+    "Instala el entorno local desde Ajustes antes de transcribir sin conexión.",
+  errModelDownloadFailedBody:
+    "Comprueba tu conexión a internet y vuelve a intentarlo. La descarga se reanuda donde quedó.",
+  errLocalRuntimeFailedBody:
+    "El proceso local terminó con error. Revisa los detalles técnicos.",
   errUnknownBody: "Ocurrió un error inesperado.",
 
   // Error actions

@@ -23,6 +23,11 @@ pub enum TranscribeErrorKind {
     DownloadAuthRequired,
     LiveUnsupported,
     ApiKeyMissing,
+    PythonMissing,
+    PythonTooOld,
+    LocalRuntimeMissing,
+    ModelDownloadFailed,
+    LocalRuntimeFailed,
     Unknown,
 }
 
@@ -86,6 +91,45 @@ impl TranscribeError {
 
     pub fn api_key_missing(provider: impl Into<String>) -> Self {
         Self::new(TranscribeErrorKind::ApiKeyMissing, "Falta clave API").with_provider(provider)
+    }
+
+    pub fn python_missing() -> Self {
+        Self::new(
+            TranscribeErrorKind::PythonMissing,
+            "No se encontró Python 3.9 o superior",
+        )
+        .with_provider("local")
+    }
+
+    pub fn python_too_old(found: &str) -> Self {
+        Self::new(
+            TranscribeErrorKind::PythonTooOld,
+            format!("Python {found} es demasiado antiguo; se necesita 3.9 o superior"),
+        )
+        .with_provider("local")
+    }
+
+    pub fn local_runtime_missing() -> Self {
+        Self::new(
+            TranscribeErrorKind::LocalRuntimeMissing,
+            "El entorno local no está instalado",
+        )
+        .with_provider("local")
+    }
+
+    pub fn model_download_failed(raw: impl Into<String>) -> Self {
+        Self::new(
+            TranscribeErrorKind::ModelDownloadFailed,
+            "No se pudo descargar el modelo",
+        )
+        .with_provider("local")
+        .with_raw(raw)
+    }
+
+    pub fn local_runtime_failed(raw: impl Into<String>) -> Self {
+        Self::new(TranscribeErrorKind::LocalRuntimeFailed, "El entorno local falló")
+            .with_provider("local")
+            .with_raw(raw)
     }
 }
 
