@@ -1,3 +1,18 @@
+## [0.10.0] - 2026-08-07
+
+### 🚀 Features
+
+- Local transcription provider via faster-whisper
+- *(backend)* Yt-dlp URL download with streamed progress
+- *(ui)* Paste, drop or type a media URL to transcribe it
+
+### 🐛 Bug Fixes
+
+- Review findings on the yt-dlp URL path
+
+### 📚 Documentation
+
+- Yt-dlp URL transcription
 ## [0.9.0] - 2026-05-22
 
 ### 🚀 Features
